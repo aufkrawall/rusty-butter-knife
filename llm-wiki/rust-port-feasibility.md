@@ -77,7 +77,11 @@ party libraries at all today.
    toolchain loses whatever file reputation the old hash had; expect fresh
    heuristic friction for an unsigned privileged utility. Language-agnostic
    but operationally real.
-7. **Binary size**: static Rust exe likely ~2–4 MB vs 1.8 MB now. Cosmetic.
+7. **Binary size**: RESOLVED IN RUST'S FAVOR (verified 2026-08-23):
+    actual Rust build is 676 KB vs C++ 1,878 KB (~2.8x smaller); even
+    llvm-stripped, C++ stays at 1,133 KB. Cause: legacy `-static` links
+    UCRT+libc+++locale+wide-streams; Rust uses declaration-only windows
+    crates plus a thin std slice with linker dead-code elimination.
 8. **COM verbosity**: Task Scheduler COM in Rust is more explicit/unsafe-ish
    than C++ with comdef RAII; bounded scope but where new bug classes would
    be introduced if rushed.
