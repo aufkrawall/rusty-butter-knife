@@ -241,7 +241,7 @@ def build_rust(arch):
         return False
 
     cmd = [cargo, "build", "--release"]
-    if triple != rust_target_triple("x86_64") or arch == "aarch64":
+    if triple != rust_target_triple("x86_64", cargo) or arch == "aarch64":
         cmd += ["--target", triple]
 
     print(f"[*] Compiling rust ({triple}): {' '.join(cmd)}")

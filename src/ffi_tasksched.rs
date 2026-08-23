@@ -9,9 +9,9 @@ use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
 };
 use windows::Win32::System::TaskScheduler::{
-    CLSID_CTaskScheduler, IExecAction, IRegisteredTask, ITaskFolder, ITaskService,
-    TASK_ACTION_EXEC, TASK_CREATE_OR_UPDATE, TASK_ENUM_HIDDEN, TASK_INSTANCES_IGNORE_NEW,
-    TASK_LOGON_S4U, TASK_RUNLEVEL_HIGHEST, TASK_STATE_QUEUED, TASK_STATE_RUNNING,
+    IExecAction, IRegisteredTask, ITaskFolder, ITaskService, TASK_ACTION_EXEC,
+    TASK_CREATE_OR_UPDATE, TASK_ENUM_HIDDEN, TASK_INSTANCES_IGNORE_NEW, TASK_LOGON_S4U,
+    TASK_RUNLEVEL_HIGHEST, TASK_STATE_QUEUED, TASK_STATE_RUNNING,
 };
 use windows::Win32::System::Variant::{VARIANT, VT_BSTR, VT_I4};
 
@@ -25,6 +25,14 @@ pub enum TiState {
     Queued,
     Other(i32),
 }
+
+/// The taskschd.dll coclass that implements ITaskService. The windows-rs
+/// metadata constant `CLSID_CTaskScheduler` ({148BD52A-...}) is the LEGACY
+/// Task Scheduler 1.0 "Scheduling Agent" class, which fails E_NOINTERFACE
+/// when asked for ITaskService -- so we pin the real GUID ourselves,
+/// identical to the C++ header's CLSID_TaskScheduler.
+const CLSID_TASK_SCHEDULER: windows::core::GUID =
+    windows::core::GUID::from_u128(0x0f87369f_a4e5_4cfc_bd3e_73e6154572dd);
 
 fn var_empty() -> VARIANT {
     // VT_EMPTY: all-zero VARIANT.
@@ -94,33 +102,64 @@ pub struct TiSession {
     root: Option<ITaskFolder>,
 }
 
+/// Stage-tagged failure from [`TiSession::connect`].
+pub struct ConnectError {
+    /// C++-identical log message, e.g. "CoCreateInstance(ITaskService) failed"
+    pub message: &'static str,
+    /// Short detail for status/report surfaces, e.g. "CoCreateInstance failed"
+    pub detail: &'static str,
+    pub hr: i32,
+}
+
 impl TiSession {
     /// CoInitializeEx + CoCreateInstance(TaskScheduler) + Connect + GetFolder.
-    pub fn connect() -> Result<TiSession, HrError> {
+    pub fn connect() -> Result<TiSession, ConnectError> {
         // SAFETY: standard COM init; balanced by CoUninitialize in Drop.
         let hr = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
         if hr.is_err() {
-            return Err(HrError(hr.0));
+            return Err(ConnectError {
+                message: "CoInitializeEx failed",
+                detail: "CoInitializeEx failed",
+                hr: hr.0,
+            });
         }
         let svc_res: windows::core::Result<ITaskService> =
             // SAFETY: in-proc COM object creation with our class identifier.
-            unsafe { CoCreateInstance(&CLSID_CTaskScheduler, None, CLSCTX_INPROC_SERVER) };
+            unsafe { CoCreateInstance(&CLSID_TASK_SCHEDULER, None, CLSCTX_INPROC_SERVER) };
         let service = match svc_res {
             Ok(s) => s,
             Err(e) => {
                 unsafe { CoUninitialize() };
-                return Err(HrError(e.code().0));
+                return Err(ConnectError {
+                    message: "CoCreateInstance(ITaskService) failed",
+                    detail: "CoCreateInstance failed",
+                    hr: e.code().0,
+                });
             }
         };
         // Parameter order per IDL: servername, user, domain, password —
         // all empty here, matching the C++ `_variant_t()` calls.
         let connected =
             unsafe { service.Connect(&var_empty(), &var_empty(), &var_empty(), &var_empty()) };
-        if connected.is_err() {
+        if let Err(e) = connected {
             unsafe { CoUninitialize() };
-            return Err(HrError(connected.err().unwrap().code().0));
+            return Err(ConnectError {
+                message: "ITaskService::Connect failed",
+                detail: "ITaskService::Connect failed",
+                hr: e.code().0,
+            });
         }
-        let root = unsafe { service.GetFolder(&BSTR::from("\\")) }.ok();
+        let root = match unsafe { service.GetFolder(&BSTR::from("\\")) } {
+            Ok(folder) => Some(folder),
+            Err(e) => {
+                unsafe { CoUninitialize() };
+                return Err(ConnectError {
+                    message: "GetFolder(\\) failed",
+                    detail: "GetFolder failed",
+                    hr: e.code().0,
+                });
+            }
+        };
         Ok(TiSession {
             service: Some(service),
             root,

@@ -161,15 +161,15 @@ pub fn attempt_trusted_installer_relaunch() -> TiRelaunchResult {
     // --- COM: ITaskService --------------------------------------------------
     let session = match ffi::TiSession::connect() {
         Ok(s) => s,
-        Err(HrError(hr)) => {
-            log_line("ERROR", &format!("CoInitializeEx/Connect failed: 0x{hr:X}"));
-            res.detail = "COM initialization failed".to_string();
+        Err(e) => {
+            log_line("ERROR", &format!("{}: 0x{:X}", e.message, e.hr));
+            res.detail = e.detail.to_string();
             return res;
         }
     };
 
     if !session.root_available() {
-        log_line("ERROR", "GetFolder(\\\\) failed");
+        log_line("ERROR", "GetFolder(\\) failed: root folder unavailable");
         res.detail = "GetFolder failed".to_string();
         return res;
     }
