@@ -105,6 +105,30 @@ party libraries at all today.
   exist in the `windows` crate (Win32/System/TaskScheduler feature).
 - "Need MSVC for a Windows Rust build" — false for gnullvm targets; llvm-mingw suffices (Tier 2 w/ host tools).
 
+## Risk→mitigation map (all risks converge to solved)
+
+Follow-up assessment 2026-08-23: every listed side effect has a concrete
+solution; nothing is a fundamental blocker.
+
+- Log markers / exit codes / status JSON: freeze as constants + contract
+tests before any porting starts.
+- Missing tests: build the golden-master dry-run diff harness FIRST; it
+becomes the permanent regression suite (cures the known-debt item).
+- Quoting/glob/OEM helpers: pure functions — transliterate 1:1 with unit
+tests against C++ reference outputs.
+- Panic mapping: catch_unwind boundary + hook.
+- COM scope: ~300 lines, exercised end-to-end by TI relaunch verification.
+- AV friction: code signing, else self-heals; unsigned rebuilds face the
+same heuristics today.
+- Supply chain: windows-sys only, committed Cargo.lock, cargo vendor.
+- Mixed-version interop: NON-ISSUE — the binary always relaunches itself,
+so parent/child are always the same build; stale NvDebloatTI-* artifacts
+are swept automatically.
+
+Residual irreducible items: slight binary-size growth (~2–4 MB static,
+cosmetic) and the rewrite window itself (zero exposure if the C++ build
+stays green until the Rust build passes golden-master).
+
 ## Open questions / stale-risk
 
 - Exact `windows` crate feature set / ergonomics may have shifted after
