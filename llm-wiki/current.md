@@ -25,6 +25,7 @@ Last cross-checked: 2026-08-23 (GPD_VERSION 1.5.0)
 - Verification/diagnostics: `debug-tools.md`.
 - Accepted trade-offs (no tests, arch output collision, single TU):
   `known-debt.md`.
+- Rust port feasibility: `rust-port-feasibility.md`.
 - Recent activity: `log/recent.md`.
 
 ## Maintenance Notes

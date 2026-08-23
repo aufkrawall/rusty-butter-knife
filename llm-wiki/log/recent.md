@@ -13,3 +13,7 @@
 - Verified claims against source: exit codes enum, component catalog
   (`buildComponents()`), TI relaunch machinery, `writeCandidatesCsv`
   writing into the run log only.
+- Rust port feasibility assessed (see `rust-port-feasibility.md`): 100%
+  portable via `windows(-sys)` + gnullvm targets; no hard blockers; managed
+  risks are log-marker/status-JSON/exit-code contracts and dry-run
+  golden-master verification given the absent test suite.

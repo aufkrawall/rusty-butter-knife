@@ -14,4 +14,4 @@ archive once it grows past that ceiling.
 
 | File | Lines | Covers |
 |---|---:|---|
-| `recent.md` | 12 | 2026-08-23 – current |
+| `recent.md` | 19 | 2026-08-23 – current |

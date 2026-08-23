@@ -1,7 +1,7 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-08-23 (initial fill-in from template; verified
-against working tree at GPD_VERSION 1.5.0)
+Last cross-checked: 2026-08-23 (verified against working tree at
+GPD_VERSION 1.5.0)
 
 Primary sources:
 - `AGENTS.md`
@@ -57,6 +57,9 @@ the concrete implementation.
     trade-off. Includes the arch-output-collision and no-test-suite items.
 - `debug-tools.md`
   - Safe verification commands, run-log anatomy, and diagnostic workflows.
+- `rust-port-feasibility.md`
+  - Full API-surface inventory vs Rust coverage, verdict, and the managed
+    risks of a potential port. Last verified 2026-08-23.
 - `log.md`
   - Stub pointing to `log/recent.md` (recent activity) and
     `log/archive-*.md` (older archives).
