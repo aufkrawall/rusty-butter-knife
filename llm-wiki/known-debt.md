@@ -63,3 +63,39 @@ inside explains it. If touched anyway, a rename to e.g.
 - "README claims no CSV files but code has writeCandidatesCsv()" — checked
   2026-08-23, confirmed not a defect: the function writes into the run log
   only (see debt entry above).
+- "Cargo.toml declares unused windows-sys features" — checked 2026-08-23,
+  falsified as a cleanup: windows-sys 0.60 cfg-gates `ReadFile` behind
+  `Win32_System_IO` and `ShellExecuteExW`/`SHELLEXECUTEINFOW` behind
+  `Win32_System_Registry`; every declared feature is load-bearing.
+
+## Audit leftovers (2026-08-23, weighed and accepted)
+
+Deferred findings from the full-repo audit, each deliberately accepted:
+
+- `is_trusted_installer()` matches any account name *containing*
+  "trustedinstaller", not only `NT SERVICE\TrustedInstaller`. Spoofing
+  requires the machine owner to create such an account themselves; kept for
+  parity with the C++ reference and SID-fallback cases.
+- Scheduled-task matching picks the first CSV field starting with `\` as the
+  task path because schtasks `/FO CSV` column order varies between versions;
+  a UNC-style hostname in column 1 could theoretically confuse it. Not
+  observed on any tested system.
+- `--list-components` prints default component states before
+  `--component=` args are applied (wmain ordering parity with the legacy
+  C++). Treated as documented behavior.
+- Opt-in components (NGX/HDAudio/CaptureSDK/NvWMI) intentionally match
+  payload files inside DriverStore packages; deleting them corrupts those
+  packages while leaving active driver copies untouched. Now disclosed in
+  README safety notes; behavior kept because these components' targets live
+  exclusively inside packages. Default-on AnselCamera vs historical
+  `NvCamera*.dll` inside old nv_dispi packages remains a version-dependent
+  latent risk of the same class.
+- COM VARIANT helpers in `ffi_tasksched.rs` intentionally leak BSTRs on
+  success paths (process-lifetime objects, few calls per run) — mirrors
+  `_variant_t` lifetime simplification, commented in code.
+- `console::err_out` does not convert LF→CRLF on real consoles (cosmetic;
+  stderr is usually redirected).
+- build.py supports `--sha256` for toolchain verification but no pinned
+  hash is recorded anywhere; default builds verify HTTPS origin + pinned
+  version + ZIP magic only. Recording the release archive's hash would close
+  this (needs a one-time download).

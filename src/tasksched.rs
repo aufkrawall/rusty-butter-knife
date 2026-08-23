@@ -239,14 +239,33 @@ pub fn attempt_trusted_installer_relaunch() -> TiRelaunchResult {
         }
 
         if !saw_running && waited >= start_grace {
+            // The child may have run and exited entirely between two polls.
+            // In that case LastTaskResult holds its real exit code, while
+            // SCHED_S_TASK_HAS_NOT_RUN (0x41303) means the scheduler never
+            // launched it at all (e.g. S4U principal refusal).
+            const SCHED_S_TASK_HAS_NOT_RUN: i64 = 0x41303;
+            match registered.last_result() {
+                Some(last) if last != SCHED_S_TASK_HAS_NOT_RUN => {
+                    res.child_status_seen = true;
+                    res.child_exit_code = last;
+                    res.child_succeeded = last == 0;
+                    res.detail = format!("TI child finished: exit=0x{last:X}");
+                    log_line(
+                        if res.child_succeeded { "INFO" } else { "ERROR" },
+                        &res.detail,
+                    );
+                }
+                _ => {
+                    log_line(
+                        "ERROR",
+                        &format!(
+                            "TI task did not enter Running state within {start_grace}s. Task Scheduler may have refused the S4U/TrustedInstaller principal."
+                        ),
+                    );
+                    res.detail = "task never started".to_string();
+                }
+            }
             timed_out = false;
-            log_line(
-                "ERROR",
-                &format!(
-                    "TI task did not enter Running state within {start_grace}s. Task Scheduler may have refused the S4U/TrustedInstaller principal."
-                ),
-            );
-            res.detail = "task never started".to_string();
             break;
         }
 

@@ -43,38 +43,45 @@ pub fn set_user_quit_requested(v: bool) {
 }
 
 pub fn init_app(opts: Options) {
-    *OPTS.lock().unwrap() = Some(opts);
-    *RUN.lock().unwrap() = Some(RunState::default());
-    *ENABLED.lock().unwrap() = Some(BTreeMap::new());
+    *lock(&OPTS) = Some(opts);
+    *lock(&RUN) = Some(RunState::default());
+    *lock(&ENABLED) = Some(BTreeMap::new());
+}
+
+/// Lock helper that recovers from poisoning: a panic while a lock is held
+/// must not turn the FATAL handler's own status/report writes into a
+/// secondary abort. State is main-thread-only, so recovery is safe.
+fn lock<'a, T>(m: &'a Mutex<T>) -> std::sync::MutexGuard<'a, T> {
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 pub fn opts<R>(f: impl FnOnce(&Options) -> R) -> R {
-    let g = OPTS.lock().unwrap();
+    let g = lock(&OPTS);
     f(g.as_ref().expect("options initialized"))
 }
 
 pub fn opts_mut<R>(f: impl FnOnce(&mut Options) -> R) -> R {
-    let mut g = OPTS.lock().unwrap();
+    let mut g = lock(&OPTS);
     f(g.as_mut().expect("options initialized"))
 }
 
 pub fn run<R>(f: impl FnOnce(&RunState) -> R) -> R {
-    let g = RUN.lock().unwrap();
+    let g = lock(&RUN);
     f(g.as_ref().expect("run state initialized"))
 }
 
 pub fn run_mut<R>(f: impl FnOnce(&mut RunState) -> R) -> R {
-    let mut g = RUN.lock().unwrap();
+    let mut g = lock(&RUN);
     f(g.as_mut().expect("run state initialized"))
 }
 
 pub fn enabled<R>(f: impl FnOnce(&BTreeMap<String, bool>) -> R) -> R {
-    let g = ENABLED.lock().unwrap();
+    let g = lock(&ENABLED);
     f(g.as_ref().expect("components initialized"))
 }
 
 pub fn enabled_mut<R>(f: impl FnOnce(&mut BTreeMap<String, bool>) -> R) -> R {
-    let mut g = ENABLED.lock().unwrap();
+    let mut g = lock(&ENABLED);
     f(g.as_mut().expect("components initialized"))
 }
 

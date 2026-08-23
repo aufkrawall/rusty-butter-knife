@@ -47,17 +47,21 @@ CaptureSDK are **not** enabled (use their `--include-*` flags to activate).
 python build.py
 ```
 
-Downloads a statically-linked LLVM/MinGW toolchain into `mingw64/` and compiles
-the binary.  You only need Python — no Visual Studio or manual toolchain setup
-required.
+Builds **both variants** into marked subfolders under `dist/`:
+
+- `dist/rust-<arch>/GreenPostInstallDebloatNative.exe` — primary Rust build (drives `cargo build --release`; requires [Rust](https://rustup.rs))
+- `dist/cpp-<arch>/GreenPostInstallDebloatNative.exe` — legacy C++17 reference build (downloads a statically-linked LLVM/MinGW toolchain into `mingw64/` on first use)
+
+You need Python; the Rust leg additionally needs `cargo`.
 
 Options:
 
 | Option | Description |
 |--------|-------------|
-| `--arch aarch64` | Cross-compile for Windows-on-ARM64 (writes to the same output name). |
+| `--variant {all,cpp,rust}` | Which variant(s) to build (default: all). |
+| `--arch aarch64` | Cross-compile for Windows-on-ARM64 (each variant writes to its own `dist/<variant>-<arch>/` folder). The Rust ARM64 leg requires the matching rustup target. |
 | `--sha256 <hex>` | Verify the SHA256 of the downloaded toolchain archive. Recommended; the toolchain is executed, so pinning its hash is good practice. |
-| `--clean` | Remove `mingw64/`, `_extract/` and any cached archive before building. |
+| `--clean` | Remove `mingw64/`, `_extract/`, any cached archive and `dist/`. |
 
 ---
 
@@ -107,7 +111,8 @@ This will attempt a TrustedInstaller-level relaunch via the Task Scheduler COM
 API so that it can delete files a normal Administrator cannot touch.  If the
 system does not grant TrustedInstaller (Windows limitation), the tool falls back
 to SYSTEM privileges, which are still sufficient for the vast majority of files.
-The parent parses the child's status file and propagates failure via exit code.
+The parent waits for the SYSTEM worker task and reads its exit code via the Task
+Scheduler (`LastTaskResult`); failures propagate via exit codes 10 and 11.
 
 ### PowerShell wrapper
 
@@ -152,7 +157,7 @@ Set `$env:GPD_NO_PAUSE = 1` when automating.
 | `--no-ti-relaunch` | Do not attempt TrustedInstaller scheduled-task relaunch. |
 | `--allow-admin-fallback` | Permit destructive execution as Administrator. |
 | `--ti-wait-seconds N` | Parent wait timeout for TI child (default 600; `=N` form also accepted). |
-| `--status-file PATH` | Write child run status JSON to PATH (used internally). |
+| `--status-file PATH` | Write child run status JSON to PATH (legacy diagnostics handoff; not used by the current TrustedInstaller flow). |
 | `--log-dir PATH` | Base directory for the log file (default: beside the executable). |
 | `--log-file PATH` | Use exactly this log file; all processes of a run append to it, so one run leaves one log. |
 | `--no-pause` | Do not pause on exit. |
@@ -173,7 +178,7 @@ Set `$env:GPD_NO_PAUSE = 1` when automating.
 | 3 | Run aborted by user (Ctrl+C); partial results recorded. |
 | 10 | TrustedInstaller relaunch failed or was not permitted. |
 | 11 | Elevated TI child reported failure. |
-| 12 | Another execute-mode instance is already running (single-instance mutex). |
+| 12 | Another execute-mode instance is already running, or the single-instance mutex could not be created (destructive runs are refused rather than left unserialized). |
 
 ---
 
@@ -190,7 +195,12 @@ Set `$env:GPD_NO_PAUSE = 1` when automating.
   names survive matching and `/TN` operations on localized systems.
 - DriverStore package roots are recognized for both `.inf_amd64_` (x64) and
   `.inf_arm64_` (ARM64) packages; whole-package deletion stays blocked and only
-  explicitly allow-listed subfolders may be removed recursively.
+  explicitly allow-listed subfolders may be removed recursively. Note that
+  individual files *inside* DriverStore packages can still be deleted when a
+  file name matches an enabled component (for example `nvvhci.sys` inside the
+  USB-C driver package when USBTypeC cleanup is on); this is intended for
+  component payload removal but means an opt-in component can touch files
+  inside a driver package.
 - Read-only files/directories get their attributes cleared and are retried once;
   deep paths fall back to extended-length (`\\?\`) forms before being scheduled
   for reboot-time deletion.

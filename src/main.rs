@@ -183,13 +183,22 @@ fn wmain_try(args: &[String]) -> Result<Flow, String> {
         let (guard, existed) =
             ffi::create_global_mutex("Global\\GreenPostInstallDebloatNative_Execute_Mutex");
         if !guard.held() {
+            // Fail closed: without the mutex, concurrent destructive runs
+            // would race over files, services and pending-reboot
+            // registrations. Dry runs are unaffected.
             log_line(
-                "WARN",
+                "FATAL",
                 &format!(
-                    "Single-instance mutex unavailable: {}",
+                    "Single-instance mutex unavailable: {}; refusing concurrent destructive run.",
                     winfmt::format_win_error(ffi::current_last_error())
                 ),
             );
+            write_status_json(
+                EXIT_ALREADY_RUNNING,
+                "failed",
+                "single-instance execute-mode mutex unavailable",
+            );
+            return Ok(Flow::Early(EXIT_ALREADY_RUNNING));
         } else if existed {
             log_line(
                 "FATAL",
@@ -270,14 +279,17 @@ fn wmain_try(args: &[String]) -> Result<Flow, String> {
 /// Port of `relaunchElevatedForWizard`. Returns child exit code when the UAC
 /// relaunch succeeded; None when elevation was declined/unavailable.
 fn relaunch_elevated_for_wizard() -> Option<i32> {
-    let mut params = tasksched::effective_child_switches().join(" ");
-    params.push_str(" --no-menu --pause");
+    let mut params = tasksched::effective_child_switches();
+    params.push("--no-menu".into());
+    params.push("--pause".into());
     // All stages append to this same log file.
     let log_file = app::run(|s| s.log_path.to_string_lossy().into_owned());
-    params.push_str(&format!(" --log-file \"{log_file}\""));
+    params.push("--log-file".into());
+    params.push(log_file);
+    let joined = util::join_command(&params);
 
     let exe_path = sysinfo::get_exe_path().to_string_lossy().into_owned();
-    let child = ffi::shellexecute_runas(&exe_path, &params)?;
+    let child = ffi::shellexecute_runas(&exe_path, &joined)?;
     Some(child.wait_exit_code() as i32)
 }
 

@@ -50,7 +50,7 @@ Component selection:\n\
   --component=Key:on/off         Toggle a specific component (repeatable).\n\
   --list-components              Print all component keys and their state, then exit.\n\n\
 Miscellaneous:\n\
-  --status-file PATH             Legacy: write child run status JSON to PATH. No longer used internally.\n\
+  --status-file PATH             Write child run status JSON to PATH (legacy diagnostics handoff).\n\
   --log-dir PATH                 Base directory for the log file. Default: beside the executable.\n\
   --log-file PATH                Use exactly this log file; all processes of a run (launcher, elevated\n\
                                  instance, SYSTEM worker) append to it, so one run leaves one log.\n\

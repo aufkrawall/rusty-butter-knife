@@ -1,3 +1,8 @@
 # Fully static binary, mirroring the legacy clang++ `-static` build.
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]
+
+# Same policy for the ARM64 cross-target (build.py --arch aarch64), so both
+# architectures produce a static binary.
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
