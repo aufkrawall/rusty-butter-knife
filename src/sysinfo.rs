@@ -49,9 +49,17 @@ pub fn current_token_account() -> String {
 // The task is created by an already-elevated Administrator. It runs the same
 // exe with --ti-child; after completion the parent reads LastTaskResult.
 // The task is always deleted after use.
+/// Well-known service SID of NT SERVICE\TrustedInstaller (per MSDN docs and
+/// `sc showsid TrustedInstaller`). Compared exactly so an unrelated local
+/// account whose name merely *contains* "trustedinstaller" cannot pass the
+/// identity check. Fail direction is safe: a false negative only triggers an
+/// extra relaunch attempt or a WARN line in an already-SYSTEM child.
+const TRUSTED_INSTALLER_SID_LOWER: &str =
+    "s-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
+
 pub fn is_trusted_installer() -> bool {
     let acct = to_lower(&current_token_account());
-    acct == "nt service\\trustedinstaller" || acct.contains("trustedinstaller")
+    acct == "nt service\\trustedinstaller" || acct == TRUSTED_INSTALLER_SID_LOWER
 }
 
 /// Port of `getExePath`.

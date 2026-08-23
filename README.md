@@ -60,7 +60,7 @@ Options:
 |--------|-------------|
 | `--variant {all,cpp,rust}` | Which variant(s) to build (default: all). |
 | `--arch aarch64` | Cross-compile for Windows-on-ARM64 (each variant writes to its own `dist/<variant>-<arch>/` folder). The Rust ARM64 leg requires the matching rustup target. |
-| `--sha256 <hex>` | Verify the SHA256 of the downloaded toolchain archive. Recommended; the toolchain is executed, so pinning its hash is good practice. |
+| `--sha256 <hex>` | Override the built-in pinned SHA256 of the downloaded toolchain archive (the pin is verified automatically; override only when deliberately switching archives). |
 | `--clean` | Remove `mingw64/`, `_extract/`, any cached archive and `dist/`. |
 
 ---
@@ -208,6 +208,9 @@ Set `$env:GPD_NO_PAUSE = 1` when automating.
   orphaned scheduled tasks) are swept automatically at relaunch time.
 - The elevated task is registered with a 2-hour execution time limit so a
   runaway child cannot linger for days.
+- The llvm-mingw toolchain archive is verified against a pinned SHA256
+  digest on every download, so a tampered or corrupted toolchain is rejected
+  before it is ever executed.
 
 ---
 

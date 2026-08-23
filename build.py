@@ -7,8 +7,8 @@ Builds BOTH variants by default into marked subfolders under dist/:
   dist/cpp-<arch>/GreenPostInstallDebloatNative.exe   (legacy C++17 build)
   dist/rust-<arch>/GreenPostInstallDebloatNative.exe  (primary Rust build)
 
-The C++ leg downloads llvm-mingw (if not already present) and compiles the
-legacy single-TU source. The Rust leg drives cargo (release profile) and
+The C++ leg downloads llvm-mingw (if not already present; its SHA256 is
+verified against a built-in pin) and compiles the legacy single-TU source. The Rust leg drives cargo (release profile) and
 copies the binary out of target/.
 
 Usage:
@@ -16,7 +16,7 @@ Usage:
   python build.py --variant cpp        # legacy C++ only
   python build.py --variant rust       # Rust only
   python build.py --arch aarch64       # cross-compile for Windows-on-ARM64
-  python build.py --sha256 <hex>       # verify the downloaded toolchain archive
+  python build.py --sha256 <hex>       # override the pinned toolchain SHA256 check
   python build.py --clean              # remove toolchain, cache and dist/
 """
 
@@ -35,6 +35,12 @@ LLVM_MINGW_VERSION = "20260616"
 LLVM_MINGW_URL = (
     f"https://github.com/mstorsjo/llvm-mingw/releases/download/"
     f"{LLVM_MINGW_VERSION}/llvm-mingw-{LLVM_MINGW_VERSION}-ucrt-x86_64.zip"
+)
+# SHA256 of the pinned release asset, taken from the GitHub release API
+# asset digest. Verified automatically on every fresh download; --sha256
+# overrides only when deliberately switching archives.
+LLVM_MINGW_SHA256 = (
+    "b9b68a4d276e16fa25802aaba458e4638f64b3884c290aaccdc2d87083b6ca35"
 )
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MINGW_DIR = os.path.join(BASE_DIR, "mingw64")
@@ -84,6 +90,10 @@ def find_clangpp():
 
 
 def download_and_extract(expected_sha256=None):
+    if expected_sha256 is None:
+        # Default to the pinned asset digest so supply-chain verification is
+        # on by default, not opt-in.
+        expected_sha256 = LLVM_MINGW_SHA256
     if os.path.isdir(MINGW_DIR) and os.path.isfile(os.path.join(MINGW_DIR, "bin", "clang++.exe")):
         print(f"[*] MinGW LLVM already present at {MINGW_DIR}")
         return True
@@ -109,9 +119,9 @@ def download_and_extract(expected_sha256=None):
             os.remove(ARCHIVE_PATH)
             print("[!] Corrupt/tampered archive deleted.")
             return False
-        print("[*] SHA256 verified OK.")
+        print("[*] SHA256 verified OK against the pinned digest.")
     else:
-        print("[*] Note: pass --sha256 <hex> to verify the toolchain download.")
+        print("[*] Note: pass --sha256 <hex> to verify a custom toolchain archive.")
 
     try:
         with open(ARCHIVE_PATH, "rb") as f:
@@ -323,7 +333,7 @@ def main():
         "--sha256",
         metavar="HEX",
         default=None,
-        help="expected SHA256 of the llvm-mingw archive (verified after download)",
+        help="override the built-in pinned SHA256 check for the llvm-mingw archive",
     )
     parser.add_argument(
         "--clean",

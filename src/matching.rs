@@ -231,3 +231,157 @@ pub fn match_component_for_path(p: &Path, enabled: &EnabledMap) -> Option<&'stat
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+
+    fn win(path_forward: &str) -> PathBuf {
+        PathBuf::from(path_forward.replace("/", "\\"))
+    }
+
+    fn only(keys: &[&str]) -> EnabledMap {
+        keys.iter().map(|k| (k.to_string(), true)).collect()
+    }
+
+    #[test]
+    fn inf_arch_marker_recognized_on_supported_arches() {
+        assert!(leaf_has_inf_arch_marker("nv_dispi.inf_amd64_0373"));
+        assert!(leaf_has_inf_arch_marker("nvhda.inf_arm64_9007"));
+        assert!(!leaf_has_inf_arch_marker("nv_dispi.inf"));
+        // x86 legacy packages are not recognized (documents intent).
+        assert!(!leaf_has_inf_arch_marker("nvdimm.inf_x86_1"));
+    }
+
+    #[test]
+    fn package_root_and_sidecar_detection() {
+        assert!(is_driver_store_package_root_name(&win("C:\\WINDOWS\\System32\\DriverStore\\FileRepository\\nv_dispi.inf_amd64_0373d825005116d0")));
+        assert!(is_driver_store_sidecar_ini(&win("C:\\WINDOWS\\System32\\DriverStore\\FileRepository\\nv_dispi.inf_amd64_0373d825005116d0.ini")));
+        assert!(!is_driver_store_sidecar_ini(&win(
+            "C:\\WINDOWS\\System32\\DriverStore\\FileRepository\\nvhda.inf"
+        )));
+        // A payload FILE inside a package is not itself a package root.
+        assert!(!is_driver_store_package_root_name(&win("C:\\WINDOWS\\System32\\DriverStore\\FileRepository\\nv_dispi.inf_amd64_0373d825005116d0\\nvvhci.sys")));
+        assert!(!is_driver_store_sidecar_ini(&win(
+            "C:\\temp\\nv_dispi.inf_amd64_1.ini"
+        )));
+    }
+
+    #[test]
+    fn core_display_leaves_protected() {
+        assert!(is_core_display_driver_leaf(&win("C:\\WINDOWS\\System32\\DriverStore\\FileRepository\\nv_dispi.inf_amd64_0373d825005116d0\\nvlddmkm.sys")));
+        assert!(!is_core_display_driver_leaf(&win("C:\\WINDOWS\\System32\\DriverStore\\FileRepository\\nv_dispi.inf_amd64_0373d825005116d0\\nvsmartmax.sys")));
+    }
+
+    #[test]
+    fn nvidia_context_string_token_rule() {
+        assert!(
+            is_nvidia_context_string("NVIDIA Telemetry"),
+            "NVIDIA Telemetry"
+        );
+        assert!(
+            is_nvidia_context_string("nvcontainer.exe"),
+            "nvcontainer.exe"
+        );
+        assert!(
+            is_nvidia_context_string("NVDisplay.Container"),
+            "NVDisplay.Container"
+        );
+        assert!(is_nvidia_context_string("geforce"), "geforce");
+        assert!(is_nvidia_context_string("nv"), "nv");
+        assert!(is_nvidia_context_string("nvsphelper64"), "nvsphelper64");
+        assert!(is_nvidia_context_string("NvFBC64.dll"), "NvFBC64.dll");
+        assert!(!is_nvidia_context_string("inventory"), "inventory");
+        assert!(!is_nvidia_context_string("convergence"), "convergence");
+        assert!(!is_nvidia_context_string("invoice"), "invoice");
+        assert!(!is_nvidia_context_string("nvx"), "nvx");
+        assert!(!is_nvidia_context_string("service"), "service");
+        assert!(!is_nvidia_context_string("winvnc"), "winvnc");
+        // Bare 2-letter nv tokens count; 3-letter tokens deliberately do not.
+    }
+
+    #[test]
+    fn preserved_container_names() {
+        assert!(is_preserved_container_name("NVDisplay.Container.exe"));
+        assert!(is_preserved_container_name("path\\to\\nvcontainer.exe"));
+        assert!(!is_preserved_container_name("nvcamera.exe"));
+    }
+
+    #[test]
+    fn module_telemetry_globs() {
+        assert!(
+            module_is_telemetry_or_updater("NvTelemetry.dll"),
+            "NvTelemetry.dll"
+        );
+        assert!(
+            module_is_telemetry_or_updater("x_Telemetry_y.dll"),
+            "x_Telemetry_y.dll"
+        );
+        assert!(
+            module_is_telemetry_or_updater("_DisplayDriverRAS.dll"),
+            "_DisplayDriverRAS.dll"
+        );
+        assert!(
+            module_is_telemetry_or_updater("_NvMsgBusBroadcast.dll"),
+            "_NvMsgBusBroadcast.dll"
+        );
+        assert!(
+            module_is_telemetry_or_updater("_nvtopps.dll"),
+            "_nvtopps.dll"
+        );
+        assert!(
+            module_is_telemetry_or_updater("_NvGSTPlugin.dll"),
+            "_NvGSTPlugin.dll"
+        );
+        assert!(
+            module_is_telemetry_or_updater("nvprofileupdaterplugin.dll"),
+            "nvprofileupdaterplugin.dll"
+        );
+        assert!(
+            module_is_telemetry_or_updater("NvProfileUpdaterPlugin.dll"),
+            "NvProfileUpdaterPlugin.dll"
+        );
+        assert!(!module_is_telemetry_or_updater("nvcuda.dll"));
+    }
+
+    #[test]
+    fn component_matching_and_exclusions() {
+        let m = only(&["Installer2Cache"]);
+        assert!(match_component_for_path(
+            &win("C:\\Program Files\\NVIDIA Corporation\\Installer2"),
+            &m
+        )
+        .is_some());
+        // Installer2 outside NVIDIA Corporation must never match.
+        assert!(match_component_for_path(&win("C:\\somewhere\\Installer2"), &m).is_none());
+        let m = only(&["USBTypeC"]);
+        let got = match_component_for_path(&win("C:\\WINDOWS\\System32\\DriverStore\\FileRepository\\nv_dispi.inf_amd64_0373d825005116d0\\nvvhci.sys"), &m).map(|c| c.key.clone());
+        assert_eq!(got.as_deref(), Some("USBTypeC"));
+        // Core display leaves stay unmatched even when a glob would hit.
+        let m = only(&["Legacy3DVisionVR", "Shield"]);
+        assert!(match_component_for_path(&win("C:\\WINDOWS\\System32\\DriverStore\\FileRepository\\nv_dispi.inf_amd64_0373d825005116d0\\nvwgf2umx.dll"), &m).is_none());
+        // Developer-tool paths are pruned from matching entirely.
+        let m = only(&["AnselCamera"]);
+        assert!(match_component_for_path(&win("C:\\cuda\\NvCamera.dll"), &m).is_none());
+        // NGX paths are excluded while NGX is deselected...
+        let m = only(&["NGX"]);
+        let disabled: BTreeMap<String, bool> = BTreeMap::new();
+        assert!(match_component_for_path(
+            &win("C:\\ProgramData\\NVIDIA\\ngx\\nvngx.dll"),
+            &disabled
+        )
+        .is_none());
+        // ...and match once NGX is enabled.
+        let got = match_component_for_path(&win("C:\\ProgramData\\NVIDIA\\ngx\\nvngx.dll"), &m)
+            .map(|c| c.key.clone());
+        assert_eq!(got.as_deref(), Some("NGX"));
+        let m = only(&["Shield"]);
+        assert!(match_component_for_path(
+            &win("C:\\Program Files\\NVIDIA Corporation\\NvStreamService.exe"),
+            &m
+        )
+        .is_some());
+    }
+}

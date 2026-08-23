@@ -192,18 +192,25 @@ fn remove_tree_counted(root: &Path) -> Result<u64, std::io::Error> {
     Ok(count)
 }
 
-/// Port of `unsafeRecursiveDirectoryTarget`: whole DriverStore package roots
-/// and non-allow-listed driver payload folders must never be removed recursively.
-fn unsafe_recursive_directory_target(p: &Path) -> bool {
-    if !p.is_dir() {
+/// Pure decision core of `unsafe_recursive_directory_target` (unit-testable):
+/// whole DriverStore package roots and non-allow-listed driver payload folders
+/// must never be removed recursively. Fail-closed: when in doubt, return true.
+fn unsafe_recursive_directory_decision(
+    is_dir: bool,
+    full_lower: &str,
+    parent_lower: &str,
+    leaf_lower: &str,
+) -> bool {
+    if !is_dir {
         return false;
     }
-    if crate::matching::is_driver_store_package_root_name(p) {
+    let package_root = parent_lower.contains("\\windows\\system32\\driverstore\\filerepository")
+        && crate::matching::leaf_has_inf_arch_marker(leaf_lower);
+    if package_root {
         return true;
     }
-    let full = crate::matching::path_wide_lower(p);
     // Do not recursively delete whole driver payload folders except explicit known bloat folders.
-    if full.contains("\\windows\\system32\\driverstore\\filerepository\\") {
+    if full_lower.contains("\\windows\\system32\\driverstore\\filerepository\\") {
         const ALLOWED_DRIVER_STORE_DIRS: &[&str] = &[
             "nvcamera",
             "nvwmi",
@@ -211,16 +218,30 @@ fn unsafe_recursive_directory_target(p: &Path) -> bool {
             "display.update",
             "update.core",
         ];
-        let leaf = p
-            .file_name()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let leaf_lower = crate::util::to_lower(&leaf);
-        if !ALLOWED_DRIVER_STORE_DIRS.contains(&leaf_lower.as_str()) {
+        if !ALLOWED_DRIVER_STORE_DIRS.contains(&leaf_lower) {
             return true;
         }
     }
     false
+}
+
+/// Port of `unsafeRecursiveDirectoryTarget`: whole DriverStore package roots
+/// and non-allow-listed driver payload folders must never be removed recursively.
+fn unsafe_recursive_directory_target(p: &Path) -> bool {
+    unsafe_recursive_directory_decision(
+        p.is_dir(),
+        &crate::matching::path_wide_lower(p),
+        &crate::util::to_lower(
+            &p.parent()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+        ),
+        &crate::util::to_lower(
+            &p.file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+        ),
+    )
 }
 
 /// Port of `deleteCandidate`. Safety predicates run first — always.
@@ -343,5 +364,69 @@ pub fn delete_candidate(index: usize) {
 
     if app::opts(|o| o.schedule_locked_for_reboot) {
         schedule_delete_tree(&c.path);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn decision(is_dir: bool, full: &str, parent: &str, leaf: &str) -> bool {
+        unsafe_recursive_directory_decision(is_dir, full, parent, leaf)
+    }
+
+    #[test]
+    fn files_are_never_unsafe_recursive_targets() {
+        assert!(!decision(
+            false,
+            "c:\\windows\\system32\\driverstore\\filerepository\\nv_dispi.inf_amd64_0373",
+            "c:\\windows\\system32\\driverstore\\filerepository",
+            "nv_dispi.inf_amd64_0373"
+        ));
+    }
+
+    #[test]
+    fn package_roots_always_blocked() {
+        assert!(decision(
+            true,
+            "c:\\windows\\system32\\driverstore\\filerepository\\nv_dispi.inf_amd64_0373",
+            "c:\\windows\\system32\\driverstore\\filerepository",
+            "nv_dispi.inf_amd64_0373"
+        ));
+        assert!(decision(
+            true,
+            "c:\\windows\\system32\\driverstore\\filerepository\\nvhda.inf_arm64_9074",
+            "c:\\windows\\system32\\driverstore\\filerepository",
+            "nvhda.inf_arm64_9074"
+        ));
+    }
+
+    #[test]
+    fn non_allowlisted_driver_store_dirs_blocked() {
+        assert!(decision(
+            true,
+            "c:\\windows\\system32\\driverstore\\filerepository\\nv_dispi.inf_amd64_0373\\NvCamera",
+            "c:\\windows\\system32\\driverstore\\filerepository\\nv_dispi.inf_amd64_0373",
+            "NvCamera"
+        ));
+    }
+
+    #[test]
+    fn allowlisted_driver_store_dirs_permitted() {
+        assert!(!decision(true, "c:\\windows\\system32\\driverstore\\filerepository\\nv_dispi.inf_amd64_0373\\nvwmi", "c:\\windows\\system32\\driverstore\\filerepository\\nv_dispi.inf_amd64_0373", "nvwmi"), "nvwmi");
+        assert!(!decision(true, "c:\\windows\\system32\\driverstore\\filerepository\\nv_dispi.inf_amd64_0373\\display.update", "c:\\windows\\system32\\driverstore\\filerepository\\nv_dispi.inf_amd64_0373", "display.update"), "display.update");
+        assert!(!decision(true, "c:\\windows\\system32\\driverstore\\filerepository\\nv_dispi.inf_amd64_0373\\update.core", "c:\\windows\\system32\\driverstore\\filerepository\\nv_dispi.inf_amd64_0373", "update.core"), "update.core");
+        assert!(!decision(true, "c:\\windows\\system32\\driverstore\\filerepository\\nv_dispi.inf_amd64_0373\\ansel", "c:\\windows\\system32\\driverstore\\filerepository\\nv_dispi.inf_amd64_0373", "ansel"), "ansel");
+        assert!(!decision(true, "c:\\windows\\system32\\driverstore\\filerepository\\nv_dispi.inf_amd64_0373\\nvcamera", "c:\\windows\\system32\\driverstore\\filerepository\\nv_dispi.inf_amd64_0373", "nvcamera"), "nvcamera");
+    }
+
+    #[test]
+    fn ordinary_dirs_outside_driver_store_permitted() {
+        assert!(!decision(
+            true,
+            "C:\\Program Files\\NVIDIA Corporation\\Installer2",
+            "C:\\Program Files\\NVIDIA Corporation",
+            "Installer2"
+        ));
     }
 }

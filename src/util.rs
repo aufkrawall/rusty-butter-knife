@@ -284,3 +284,118 @@ pub fn parse_csv_line(line: &str) -> Vec<String> {
     fields.push(cur);
     fields
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wildcard_matches_exact_and_case_insensitive() {
+        assert!(wildcard_match_no_case("NVShield.dll", "nvshield.dll"));
+        assert!(wildcard_match_no_case("abc", "abc"));
+        assert!(!wildcard_match_no_case("abc", "abd"));
+    }
+
+    #[test]
+    fn wildcard_star_semantics() {
+        assert!(wildcard_match_no_case("nvhda64v.sys", "nvhda*"));
+        assert!(wildcard_match_no_case("nvhda64v.sys", "*.sys"));
+        assert!(wildcard_match_no_case("nvhda64v.sys", "*hda*"));
+        assert!(wildcard_match_no_case("nvhda64v.sys", "nv*d*a*.sys"));
+        assert!(wildcard_match_no_case("anything", "*"));
+        assert!(!wildcard_match_no_case("setup.exe", "*.dll"));
+        // '*' must not cross into non-matching required characters.
+        assert!(!wildcard_match_no_case("abc", "*x"));
+    }
+
+    #[test]
+    fn wildcard_question_mark() {
+        assert!(wildcard_match_no_case(
+            "nvsphelper64.exe",
+            "nvsphelper??.exe"
+        ));
+        assert!(!wildcard_match_no_case(
+            "nvsphelper64.exe",
+            "nvsphelper?.exe"
+        ));
+    }
+
+    #[test]
+    fn wildcard_empty_patterns() {
+        assert!(wildcard_match_no_case("", ""));
+        assert!(wildcard_match_no_case("", "**"));
+        assert!(!wildcard_match_no_case("", "?"));
+        assert!(!wildcard_match_no_case("a", ""));
+    }
+
+    #[test]
+    fn quote_arg_windows_rules() {
+        assert_eq!(quote_arg("plain"), "\"plain\"");
+        assert_eq!(quote_arg("with space"), "\"with space\"");
+        assert_eq!(quote_arg(""), "\"\"");
+        // Trailing backslashes must be doubled before the closing quote.
+        assert_eq!(quote_arg("C:\\dir\\"), "\"C:\\dir\\\\\"");
+        // Backslashes before an embedded quote double up, quote escaped.
+        assert_eq!(quote_arg("a\\b\"c"), "\"a\\b\\\"c\"");
+        assert_eq!(quote_arg("say \"hi\""), "\"say \\\"hi\\\"\"");
+    }
+
+    #[test]
+    fn join_command_quotes_only_when_needed() {
+        assert_eq!(join_command(&["a".into(), "b c".into()]), "a \"b c\"");
+        assert_eq!(join_command(&["".into()]), "\"\"");
+        assert_eq!(
+            join_command(&["C:\\tools\\x.exe".into(), "--flag".into()]),
+            "C:\\tools\\x.exe --flag"
+        );
+    }
+
+    #[test]
+    fn parse_csv_line_handles_quotes() {
+        assert_eq!(
+            parse_csv_line("\"DESKTOP\",\"\\Task\\Name\",\"Ready\""),
+            vec!["DESKTOP", "\\Task\\Name", "Ready"]
+        );
+        // Escaped quotes survive; unquoted comma splits; trailing empty field kept.
+        assert_eq!(
+            parse_csv_line("\"a \"\"b\"\"\",c,"),
+            vec!["a \"b\"", "c", ""]
+        );
+    }
+
+    #[test]
+    fn atoi_prefix_clamps_like_wtoi() {
+        assert_eq!(atoi_prefix("42x"), 42);
+        assert_eq!(atoi_prefix("  -7"), -7);
+        assert_eq!(atoi_prefix("+9"), 9);
+        assert_eq!(atoi_prefix("nope"), 0);
+        assert_eq!(atoi_prefix(""), 0);
+        // Values beyond i32 clamp to i32 bounds (documented deviation note:
+        // _wtoi is UB there; we clamp instead).
+        assert_eq!(atoi_prefix("99999999999999"), i32::MAX as i64);
+        assert_eq!(atoi_prefix("-99999999999999"), i32::MIN as i64);
+    }
+
+    #[test]
+    fn json_escape_contract() {
+        assert_eq!(json_escape("a\"b\\c"), "a\\\"b\\\\c");
+        assert_eq!(json_escape("\n\r\t\u{1}"), "\\n\\r\\t\\u0001");
+        assert_eq!(json_escape("\u{1F600}"), "\u{1F600}");
+    }
+
+    #[test]
+    fn json_field_readers() {
+        let json = "{\"logPath\": \"C:\\\\temp\\\\a.log\", \"exitCode\": -3}";
+        assert_eq!(json_find_string_field(json, "logPath"), "C:\\temp\\a.log");
+        assert_eq!(json_find_int_field(json, "exitCode", 0), -3);
+        assert_eq!(json_find_int_field(json, "missing", 7), 7);
+        assert_eq!(json_find_string_field(json, "missing"), "");
+    }
+
+    #[test]
+    fn case_insensitive_helpers() {
+        assert!(contains_no_case("NVIDIA Telemetry", "telemetry"));
+        assert!(ends_with_no_case("Setup.LOG", ".log"));
+        assert_eq!(trim(" \t x\r\n "), "x");
+    }
+}

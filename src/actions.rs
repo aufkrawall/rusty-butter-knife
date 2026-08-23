@@ -279,7 +279,11 @@ pub fn handle_services(enabled: &crate::app::EnabledMap) {
             continue;
         }
 
-        let handle = match scm.open_service_full(&svc.name) {
+        let handle = match scm.open_service_for_ops(
+            &svc.name,
+            kill_lockers,
+            disable_services || delete_services,
+        ) {
             Ok(h) => h,
             Err(e) => {
                 log_action(

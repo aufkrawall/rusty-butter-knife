@@ -124,17 +124,25 @@ pub fn enumerate_win32_services() -> Result<Vec<ServiceEntry>, Win32Error> {
 pub struct ServiceHandle(windows_sys::Win32::System::Services::SC_HANDLE);
 
 impl ScmGuard {
-    /// Open with STOP | QUERY_STATUS | CHANGE_CONFIG | DELETE rights.
-    pub fn open_service_full(&self, name: &str) -> Result<ServiceHandle, Win32Error> {
+    /// Open with the least privileges the requested operations need.
+    /// Requesting only what we exercise avoids OpenService failing outright
+    /// on services whose DACL denies rights we never use (e.g. DELETE).
+    pub fn open_service_for_ops(
+        &self,
+        name: &str,
+        stop_needed: bool,
+        reconfigure_needed: bool,
+    ) -> Result<ServiceHandle, Win32Error> {
+        let mut desired_access = SERVICE_QUERY_STATUS;
+        if stop_needed {
+            desired_access |= SERVICE_STOP;
+        }
+        if reconfigure_needed {
+            desired_access |= SERVICE_CHANGE_CONFIG | DELETE_RIGHT;
+        }
         let w = wide(name);
         // SAFETY: name outlives the call; handle closed by ServiceHandle::drop.
-        let h = unsafe {
-            OpenServiceW(
-                self.0,
-                w.as_ptr(),
-                SERVICE_STOP | SERVICE_QUERY_STATUS | SERVICE_CHANGE_CONFIG | DELETE_RIGHT,
-            )
-        };
+        let h = unsafe { OpenServiceW(self.0, w.as_ptr(), desired_access) };
         if h.is_null() {
             Err(last_error())
         } else {

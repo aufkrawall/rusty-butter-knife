@@ -274,3 +274,34 @@ pub fn initialize_component_selection() {
         }
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_bool_assignment_variants() {
+        assert_eq!(
+            parse_bool_assignment("--preserve-nvcontainers=off", "--preserve-nvcontainers"),
+            Some(false)
+        );
+        assert_eq!(
+            parse_bool_assignment("--preserve-nvcontainers=ON", "--preserve-nvcontainers"),
+            Some(true)
+        );
+        assert_eq!(
+            parse_bool_assignment("--preserve-nvcontainers=0", "--preserve-nvcontainers"),
+            Some(false)
+        );
+        // Bare form has no '=' assignment.
+        assert_eq!(
+            parse_bool_assignment("--preserve-nvcontainers", "--preserve-nvcontainers"),
+            None
+        );
+        // Different flag never matches.
+        assert_eq!(
+            parse_bool_assignment("--component=x:on", "--preserve-nvcontainers"),
+            None
+        );
+    }
+}

@@ -70,12 +70,9 @@ inside explains it. If touched anyway, a rename to e.g.
 
 ## Audit leftovers (2026-08-23, weighed and accepted)
 
-Deferred findings from the full-repo audit, each deliberately accepted:
+Deferred findings from the full-repo audit, each deliberately accepted.
+Items resolved in the same-day second pass are listed at the bottom:
 
-- `is_trusted_installer()` matches any account name *containing*
-  "trustedinstaller", not only `NT SERVICE\TrustedInstaller`. Spoofing
-  requires the machine owner to create such an account themselves; kept for
-  parity with the C++ reference and SID-fallback cases.
 - Scheduled-task matching picks the first CSV field starting with `\` as the
   task path because schtasks `/FO CSV` column order varies between versions;
   a UNC-style hostname in column 1 could theoretically confuse it. Not
@@ -95,7 +92,16 @@ Deferred findings from the full-repo audit, each deliberately accepted:
   `_variant_t` lifetime simplification, commented in code.
 - `console::err_out` does not convert LF→CRLF on real consoles (cosmetic;
   stderr is usually redirected).
-- build.py supports `--sha256` for toolchain verification but no pinned
-  hash is recorded anywhere; default builds verify HTTPS origin + pinned
-  version + ZIP magic only. Recording the release archive's hash would close
-  this (needs a one-time download).
+
+Resolved same day (second audit pass), recorded here so they are not
+re-derived:
+
+- `is_trusted_installer()` no longer substring-matches; it accepts exactly
+  `NT SERVICE\TrustedInstaller` or its well-known service SID
+  (S-1-5-80-956008885-…). Fail direction stays safe (false negative only
+  triggers an extra relaunch attempt / WARN line).
+- The llvm-mingw archive SHA256 is now pinned in `build.py`
+  (`LLVM_MINGW_SHA256`, taken from the GitHub release asset digest) and
+  verified automatically on every fresh download; `--sha256` overrides.
+- Service handles are opened with rights matched to the requested
+  operations, so DACL-denied DELETE no longer blocks stop/disable flows.

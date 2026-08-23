@@ -1,5 +1,44 @@
 # Recent Activity
 
+## 2026-08-23 — Second pass: unit tests for the pure safety layer + hardening
+
+- New `#[cfg(test)]` suites (std test attribute only, no framework), 24
+  tests total, all passing; `cargo clippy --all-targets -- -D warnings`
+  added to the personal gate for this pass:
+  - `util.rs`: wildcard matcher (star/question/empty/case), quote_arg
+    Windows argv rules incl. backslash runs, join_command, parse_csv_line
+    quoted/escaped forms, atoi_prefix clamping, json_escape/json field
+    readers, case-insensitive helpers.
+  - `matching.rs`: inf arch markers, package-root/sidecar detection,
+    core-display-leaf protection, nv-token context rule (2-letter yes,
+    3-letter no), preserved containers, telemetry module globs, and
+    match_component_for_path scenarios (Installer2 guard, USBTypeC payload
+    inside a package, NGX on/off exclusion, developer-tool pruning).
+  - `deletion.rs`: `unsafe_recursive_directory_target` refactored into a
+    pure decision fn (`unsafe_recursive_directory_decision`) — behavior
+    identical (is_dir/full/parent/leaf inputs); tests cover package roots,
+    allow-listed vs non-allow-listed dirs, files never flagged.
+  - `options.rs`: parse_bool_assignment variants.
+- Hardening implemented:
+  - `sysinfo.rs`: is_trusted_installer now exact-matches
+    NT SERVICE\TrustedInstaller or its well-known service SID
+    (S-1-5-80-956008885-…, confirmed via MSDN/sc showsid) instead of a
+    substring match. Fail direction unchanged-safe.
+  - `ffi_services.rs`: ScmGuard::open_service_full replaced by
+    open_service_for_ops(stop_needed, reconfigure_needed) — least-privilege
+    handle rights so DACL-denied DELETE can't block stop-only flows;
+    call site in actions.rs updated.
+  - `Run-GreenPostInstallDebloat.ps1`: Format-NativeArgument pre-quotes
+    passthrough args containing spaces/quotes (Start-Process -ArgumentList
+    does NOT re-quote); verified with char-code-level PS tests.
+  - `build.py`: LLVM_MINGW_SHA256 pin (from GitHub release asset digest)
+    verified automatically on fresh downloads; --sha256 overrides.
+- Test-authoring lessons: the bash transport halves literal backslash runs —
+  generate backslash-heavy test text programmatically (chr tokens), never
+  via heredoc literals. CRT quote rule re-confirmed: only backslashes
+  IMMEDIATELY before a quote double (k → 2k+1); earlier ones flush singly.
+- Dist artifacts rebuilt for both legs; stale root exe removed.
+
 ## 2026-08-23 — Full-repo quality audit; safety/robustness fixes applied
 
 - Template-driven audit of the entire repo (Rust primary, legacy C++,
