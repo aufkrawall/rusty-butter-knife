@@ -19,3 +19,4 @@ Cargo.lock.bak
 # Python
 __pycache__/
 *.pyc
+llm-wiki/debug-tools-security-audit.md
