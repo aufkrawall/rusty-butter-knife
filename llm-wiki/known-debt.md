@@ -27,14 +27,17 @@ real systems. What would need to be true to resolve: the predicate/matching
 layer gets decoupled from direct Win32 calls, or a fixture-tree-based dry-run
 harness is added.
 
-## Single ~2500-line translation unit
+## Single ~2500-line translation unit (LEGACY C++ ONLY)
 
 All C++ lives in one file; compile time is still fine but growing, and edits
 touch one giant diff surface.
 
-Why accepted: deliberate architecture choice — trivial distribution/build
-story (`python build.py`, one source file) matches the project's philosophy.
-Do not split unless explicitly requested.
+Why accepted: deliberate architecture choice of the legacy implementation —
+trivial distribution/build story (`python build.py`, one source file).
+The file is grandfathered as historical reference and must NOT grow.
+Per user directive, source files target ~500–800 lines: the Rust port
+(`src/`) is split into modules under that ceiling, and any new source file
+must respect it. Do not split the legacy .cpp.
 
 ## Both architectures write the same output filename
 

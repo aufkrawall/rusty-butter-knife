@@ -4,8 +4,9 @@ Last cross-checked: 2026-08-23 (GPD_VERSION 1.5.0)
 
 ## Summary
 
-- Native Windows C++17 NVIDIA post-install debloater; entire logic in one
-  ~2500-line translation unit (`GreenPostInstallDebloatNative.cpp`).
+- Native Windows NVIDIA post-install debloater. PRIMARY: Rust crate at repo
+  root (`src/`, modules, clippy-clean, unsafe confined to `ffi*` modules).
+  LEGACY: C++17 single TU kept as reference, still builds via `python build.py`.
 - Built via `python build.py` (pinned llvm-mingw in `mingw64/`, x86_64
   default, aarch64 cross-target available). No test suite, no CI.
 - Destructive system tool: dry-run by default; destructive execution needs

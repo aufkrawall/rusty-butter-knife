@@ -40,6 +40,25 @@ System32` (`systemDirFile`), never via PATH search. Preserve this.
 - Prefer fail-closed predicates in matching code: when uncertain whether a
   path is bloat, return "not a candidate".
 
+## Rust (`src/`, primary implementation since 2026-08-23)
+
+- Toolchain: nightly works, stable-compatible; gate is `cargo build` +
+  `cargo clippy -- -D warnings` + `cargo fmt` -- all three stay clean.
+- **Unsafe policy:** crate root has `#![deny(unsafe_code)]`; unsafe exists
+  ONLY inside the `ffi*` module family (`ffi.rs`, `ffi_services.rs`,
+  `ffi_tasksched.rs`), each call wrapped safe with a SAFETY comment.
+  Verified by grep: zero unsafe blocks anywhere else.
+- **File-size discipline:** every source file under ~800 lines (largest:
+  ffi.rs ~740). Split along section boundaries when approaching it.
+- Modules mirror the legacy .cpp section map (see repo-map.md); snake_case
+  files and functions (`log_line` corresponds to C++ `logLine`).
+- Contracts (do not drift): exit codes enum, status-file JSON keys, log
+  markers ("run header ====", "Candidate count: "), flag surface,
+  component catalog strings. Golden check: dry-run output must match the
+  C++ build on the same machine (verified identical 2026-08-23).
+- Dependencies: only Microsoft-published crates (`windows`, `windows-sys`),
+  pinned via committed Cargo.lock. No other crates without user approval.
+
 ## Python (`build.py`)
 
 - Stdlib only; no third-party dependencies. argparse CLI, module-level

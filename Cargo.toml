@@ -1,0 +1,42 @@
+[package]
+name = "green-post-install-debloat-native"
+version = "1.5.0"
+edition = "2021"
+description = "Native Windows NVIDIA post-install debloater (Rust port)"
+license = "MIT"
+
+[[bin]]
+name = "GreenPostInstallDebloatNative"
+path = "src/main.rs"
+
+[dependencies]
+# Raw Win32 FFI (used only inside src/ffi.rs behind safe wrappers).
+windows-sys = { version = "0.60", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Console",
+    "Win32_System_Threading",
+    "Win32_System_Pipes",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Services",
+    "Win32_System_SystemInformation",
+    "Win32_System_LibraryLoader",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Globalization",
+    "Win32_System_IO",
+    "Win32_System_Registry",
+] }
+# Generated COM interface bindings (used only inside src/ffi.rs).
+windows = { version = "0.62", features = [
+    "Win32_System_Com",
+    "Win32_System_Ole",
+    "Win32_System_TaskScheduler",
+    "Win32_System_Variant",
+] }
+
+[profile.release]
+opt-level = 2

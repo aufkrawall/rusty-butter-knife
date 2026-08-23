@@ -1,5 +1,24 @@
 # Recent Activity
 
+## 2026-08-23 — Full Rust port (v1.5.0) landed alongside legacy C++
+
+- New Cargo crate at repo root: `src/` split into 17 modules, all under the
+  ~800-line ceiling (largest: `ffi.rs` at ~740).
+- Unsafe confined to the `ffi*` module family (`ffi.rs`, `ffi_services.rs`,
+  `ffi_tasksched.rs`) behind safe wrappers; crate root has
+  `#![deny(unsafe_code)]`. Verified: zero unsafe blocks elsewhere.
+- `cargo build`, `cargo clippy -- -D warnings`, `cargo fmt` all clean;
+  release binary ~660 KB fully static.
+- Golden parity on this machine vs same-day C++ run: identical discovery
+  summary (all components = 0), byte-compatible log markers; Rust log
+  tallying correctly counts earlier logs (cross-version contract holds).
+- Contracts preserved: exit codes, status-file JSON keys, single-run single-
+  log append across processes, flag surface incl. bare-launch wizard and
+  EXECUTE confirmation, TI relaunch via COM (S4U/TrustedInstaller principal,
+  PT2H limit, LastTaskResult polling).
+- Known text divergence: --help says "native Rust build" instead of
+  "native C++ build".
+
 ## 2026-08-23 â€” Project set up as git repo; AGENTS.md / llm-wiki filled in
 
 - Initialized local git repo (`main`, initial commit `797cd95`) with

@@ -17,8 +17,19 @@ anchors; the file is a single translation unit).
 
 ## Core Tree
 
-- `GreenPostInstallDebloatNative.cpp` — **the entire product**, one C++17 TU.
-  Section map by first defining line:
+- `src/` — **Rust crate (primary implementation)**, ported 1:1 from the
+  legacy TU; every module under the ~800-line ceiling:
+  `main.rs` (orchestration, wmain flow), `app.rs` (globals/exit codes),
+  `types.rs`, `util.rs`, `winfmt.rs`, `console.rs`, `logging.rs`,
+  `components.rs`, `options.rs`, `menu.rs`, `sysinfo.rs`, `procs.rs`,
+  `matching.rs`, `discovery.rs`, `actions.rs`, `deletion.rs`,
+  `report.rs`, `tasksched.rs`; plus the FFI boundary family
+  (`ffi.rs`, `ffi_services.rs`, `ffi_tasksched.rs`) — the ONLY modules
+  containing `unsafe` (crate root denies it elsewhere). Build via
+  `cargo build --release`; gate adds clippy -D warnings + fmt.
+- `GreenPostInstallDebloatNative.cpp` — LEGACY C++17 single TU, kept as
+  reference and still buildable; must not grow. Section map by first
+  defining line (the Rust modules in `src/` mirror these sections 1:1):
   - 1–77: header comment block (usage, safety model, build examples) — keep
     in sync with behavior changes; then includes and `GPD_VERSION`.
   - ~79–175: exit-code enum (`EXIT_*`), `kTiTaskPrefix` ("NvDebloatTI-"),
@@ -75,19 +86,19 @@ anchors; the file is a single translation unit).
   - ~2332–2499: `relaunchElevatedForWizard` (UAC relaunch with forwarded
     selection), `consoleCtrlHandler` (graceful abort → exit code 3),
     `wmain`.
-- `build.py` — toolchain bootstrap + compile driver. Pins llvm-mingw
+- `build.py` — LEGACY toolchain bootstrap + compile driver. Pins llvm-mingw
   (`LLVM_MINGW_VERSION`), downloads/SHA256-verifies/extracts into `mingw64/`
   if missing, falls back to system `clang++`. Compile flags: `-std=c++17
-  -municode -O2 -Wall -Wextra -static` plus libs advapi32, shell32, ole32,
-  oleaut32, taskschd. Targets: x86_64 (default), aarch64 via
-  `--target=aarch64-w64-mingw32`.
+  -municode -O2 -Wall -Wextra -static`; targets x86_64 (default) and aarch64
+  via `--target=aarch64-w64-mingw32`. Both arches write the same output name.
 - `Run-GreenPostInstallDebloat.ps1` — user-facing wrapper: self-elevates via
   UAC, runs the full destructive flag set, keeps window open, forwards extra
   args; honors `GPD_NO_PAUSE=1` for automation.
 - `README.md` — user-facing docs: what-it-does, build, usage, full flag
   table, exit codes, safety notes, log format. Treated as a contract that
   must be updated alongside CLI/behavior changes.
-- `.gitignore` — excludes `mingw64/`, `*.exe`, `*.log`, `*.7z`, `_extract/`.
+- `.gitignore` — excludes `mingw64/`, `*.exe`, `*.log`, `*.7z`, `_extract/`,
+  `/target` (Rust build dir). `Cargo.lock` is committed (binary crate).
 
 ## Important Support and Output Paths
 

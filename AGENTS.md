@@ -19,19 +19,18 @@ Copyright (c) 2026 aufkrawall
   `--dry-run`, `--list-components`, `--help`. Never invoke `--execute`,
   `--kill-lockers`, the PowerShell wrapper, or a bare launch (which opens the
   wizard preselected for destructive mode).
-- **Default development loop:** `python build.py` — one ~2500-line translation
-  unit compiles in seconds. This is the fast feedback loop; stay in it while
-  iterating. Do not add extra verification steps after every small edit.
-- **Then close with exactly ONE gate.** A clean `python build.py` (exit code 0,
-  zero new `-Wall -Wextra` warnings) plus, when behavior changed, one safe
-  smoke run: `./GreenPostInstallDebloatNative.exe --list-components` and/or
-  `--dry-run` under a timeout (a dry-run scans real paths but deletes nothing;
-  it writes a `debloat-*.log` beside the exe, which is gitignored). Gates are
-  nested, not cumulative — this single gate covers ordinary changes.
-  - Change touching `build.py`, compile flags, or target/arch handling ->
-    additionally verify the second target compiles: `python build.py --arch
-    aarch64` (then rebuild default x86_64 — both write the same output name,
-    see known-debt.md).
+- **Default development loop:** `python build.py` compiles the legacy C++ in
+  seconds; the primary implementation is now the **Rust crate** at the repo
+  root — its loop is `cargo build` (single-digit seconds). Stay in this loop
+  while iterating; do not run extra verification after every small edit.
+- **Then close with exactly ONE gate.**
+  - Rust (primary): `cargo build` + `cargo clippy -- -D warnings`, zero
+    warnings. When behavior changed, one safe smoke run:
+    `./target/release/GreenPostInstallDebloatNative.exe --list-components`
+    and/or `--dry-run` under a timeout (writes a gitignored log beside the
+    binary).
+  - Legacy C++: `python build.py`, warning-free; only when touching the
+    legacy `.cpp`.
   - Change touching CLI flags/help text -> additionally diff `--help` output
     against the flag table in `README.md` and update the README if they drift.
 - What the gate does NOT cover: there is no test suite, no linter beyond the
@@ -94,9 +93,12 @@ Copyright (c) 2026 aufkrawall
   fail-closed direction: when in doubt, do NOT match a path for deletion.
   Whole DriverStore package roots stay undeletable; only allow-listed
   subfolders may be removed recursively.
-- Single-file architecture is deliberate: all C++ lives in one translation
-  unit. Do not split the source into multiple files/TUs unless explicitly
-  requested.
+- **Source-file size discipline:** source-code files (Rust modules going
+  forward; build scripts included) must stay within roughly **500–800
+  lines**. Split proactively when a file approaches the ceiling — split
+  along the existing section boundaries rather than artificially. Wiki/
+  docs pages are exempt; the legacy `GreenPostInstallDebloatNative.cpp`
+  is grandfathered as historical reference and must not grow.
 - Treat logs, dumps, media, captures, credentials, private keys, tokens,
   and user data as sensitive.
 - Do not commit secrets, dumps, logs, captures, large generated artifacts,
