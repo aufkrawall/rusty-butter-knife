@@ -1,0 +1,16 @@
+# Build artifacts
+*.exe
+*.7z
+*.zip
+*.o
+*.obj
+
+# Logs
+*.log
+
+# Bundled toolchain / dependencies
+mingw64/
+
+# Python
+__pycache__/
+*.pyc
