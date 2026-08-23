@@ -86,7 +86,9 @@ anchors; the file is a single translation unit).
   - ~2332–2499: `relaunchElevatedForWizard` (UAC relaunch with forwarded
     selection), `consoleCtrlHandler` (graceful abort → exit code 3),
     `wmain`.
-- `build.py` — LEGACY toolchain bootstrap + compile driver. Pins llvm-mingw
+- `build.py` — UNIFIED build entry point: builds BOTH variants by default
+  into marked subfolders (`dist/cpp-<arch>/`, `dist/rust-<arch>/`);
+  `--variant {all,cpp,rust}` selects a leg. For the C++ leg it pins llvm-mingw
   (`LLVM_MINGW_VERSION`), downloads/SHA256-verifies/extracts into `mingw64/`
   if missing, falls back to system `clang++`. Compile flags: `-std=c++17
   -municode -O2 -Wall -Wextra -static`; targets x86_64 (default) and aarch64

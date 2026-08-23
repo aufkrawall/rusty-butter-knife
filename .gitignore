@@ -13,6 +13,7 @@ mingw64/
 
 # Rust
 /target
+/dist
 Cargo.lock.bak
 
 # Python
