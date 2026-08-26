@@ -47,19 +47,18 @@ CaptureSDK are **not** enabled (use their `--include-*` flags to activate).
 python build.py
 ```
 
-Builds **both variants** into marked subfolders under `dist/`:
+By default this builds the **primary Rust build** into `dist/rust-<arch>/`. It drives `cargo build --release`; you need Python 3 and Rust with the MSVC toolchain ([rustup](https://rustup.rs), `x86_64-pc-windows-msvc`).
 
-- `dist/rust-<arch>/GreenPostInstallDebloatNative.exe` — primary Rust build (drives `cargo build --release`; requires [Rust](https://rustup.rs))
-- `dist/cpp-<arch>/GreenPostInstallDebloatNative.exe` — legacy C++17 reference build (downloads a statically-linked LLVM/MinGW toolchain into `mingw64/` on first use)
+The legacy C++17 translation unit is kept as **reference code**. It is no longer built by default; build it explicitly with `--variant cpp` (downloads a statically-linked LLVM/MinGW toolchain into `mingw64/` on first use) or build both legs with `--variant all`.
 
-You need Python; the Rust leg additionally needs `cargo`.
+Every produced binary's PE machine type is verified against the requested architecture before it lands in `dist/`, so a cross-build can never silently produce the wrong architecture.
 
 Options:
 
 | Option | Description |
 |--------|-------------|
-| `--variant {all,cpp,rust}` | Which variant(s) to build (default: all). |
-| `--arch aarch64` | Cross-compile for Windows-on-ARM64 (each variant writes to its own `dist/<variant>-<arch>/` folder). The Rust ARM64 leg requires the matching rustup target. |
+| `--variant {all,cpp,rust}` | Which variant(s) to build (default: `rust`). |
+| `--arch aarch64` | Cross-compile for Windows-on-ARM64 (each variant writes to its own `dist/<variant>-<arch>/` folder). The Rust ARM64 leg requires the matching rustup target (`aarch64-pc-windows-msvc`). |
 | `--sha256 <hex>` | Override the built-in pinned SHA256 of the downloaded toolchain archive (the pin is verified automatically; override only when deliberately switching archives). |
 | `--clean` | Remove `mingw64/`, `_extract/`, any cached archive and `dist/`. |
 

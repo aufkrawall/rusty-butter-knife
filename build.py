@@ -2,19 +2,25 @@
 """
 Build script for GreenPostInstallDebloatNative.
 
-Builds BOTH variants by default into marked subfolders under dist/:
+Default output is the PRIMARY RUST BUILD into dist/rust-<arch>/; the legacy
+C++17 translation unit is reference code and can be built explicitly via
+--variant cpp (or --variant all).
 
-  dist/cpp-<arch>/GreenPostInstallDebloatNative.exe   (legacy C++17 build)
-  dist/rust-<arch>/GreenPostInstallDebloatNative.exe  (primary Rust build)
+  dist/rust-<arch>/GreenPostInstallDebloatNative.exe   (primary Rust build)
+  dist/cpp-<arch>/GreenPostInstallDebloatNative.exe    (legacy C++17, reference)
 
 The C++ leg downloads llvm-mingw (if not already present; its SHA256 is
-verified against a built-in pin) and compiles the legacy single-TU source. The Rust leg drives cargo (release profile) and
-copies the binary out of target/.
+verified against a built-in pin) and compiles the legacy single-TU source.
+The Rust leg drives cargo (release profile) and copies the binary out of
+target/. EVERY artifact's PE machine type is verified against the requested
+architecture before it lands in dist/ (x86_64 == 0x8664, ARM64 == 0xAA64),
+so a host/target mismatch can never silently masquerade as a cross-build
+(audit finding on RUST_ARCH_TARGETS[x86_64]=None).
 
 Usage:
-  python build.py                      # build both variants (x86_64 default)
+  python build.py                      # build Rust variant (x86_64 default)
   python build.py --variant cpp        # legacy C++ only
-  python build.py --variant rust       # Rust only
+  python build.py --variant all        # both variants
   python build.py --arch aarch64       # cross-compile for Windows-on-ARM64
   python build.py --sha256 <hex>       # override the pinned toolchain SHA256 check
   python build.py --clean              # remove toolchain, cache and dist/
@@ -51,16 +57,55 @@ ARCHIVE_NAME = f"llvm-mingw-{LLVM_MINGW_VERSION}-ucrt-x86_64.zip"
 ARCHIVE_PATH = os.path.join(BASE_DIR, ARCHIVE_NAME)
 
 # Host toolchain is x86_64; these flags select the cross-compilation target.
+# Every entry maps to an EXPLICIT target: "use whatever the host is" would
+# make --arch x86_64 produce an ARM64 binary on an ARM64 machine (audit P0
+# finding in build.py).
 ARCH_TARGETS = {
-    "x86_64": None,
+    "x86_64": "--target=x86_64-w64-mingw32",
     "aarch64": "--target=aarch64-w64-mingw32",
 }
 
-# Rust cross-compilation needs an extra rustup target; the host target does not.
+PE_MACHINE = {"x86_64": 0x8664, "aarch64": 0xAA64}
+
+# Rust cross-compilation targets are equally explicit and msvc-based; add the
+# matching rustup target when cross-building ARM64.
 RUST_ARCH_TARGETS = {
-    "x86_64": None,
+    "x86_64": "x86_64-pc-windows-msvc",
     "aarch64": "aarch64-pc-windows-msvc",
 }
+
+
+def pe_machine_type(path):
+    """Read the COFF 'Machine' field from a PE file (None if unreadable)."""
+    try:
+        with open(path, "rb") as f:
+            dos = f.read(64)
+            if len(dos) < 64 or dos[:2] != b"MZ":
+                return None
+            import struct
+
+            e_lfanew = struct.unpack_from("<I", dos, 0x3C)[0]
+            f.seek(e_lfanew)
+            pe_sig = f.read(6)
+            if pe_sig[:4] != b"PE\x00\x00":
+                return None
+            return struct.unpack_from("<H", pe_sig, 4)[0]
+    except OSError:
+        return None
+
+
+def verify_pe_machine(path, arch):
+    expected = PE_MACHINE.get(arch)
+    actual = pe_machine_type(path)
+    if actual != expected:
+        print(
+            f"[!] PE machine verification FAILED for {path}: "
+            f"expected 0x{expected:04X}, found "
+            + (f"0x{actual:04X}" if actual is not None else "unreadable")
+        )
+        return False
+    print(f"[*] PE machine type verified: {path} ({arch})")
+    return True
 
 
 def dist_dir(variant, arch):
@@ -166,9 +211,8 @@ def build_cpp(clangpp_path, arch, out_path):
 
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     cmd = [clangpp_path]
-    target_flag = ARCH_TARGETS.get(arch)
-    if target_flag:
-        cmd.append(target_flag)
+    target_flag = ARCH_TARGETS[arch]
+    cmd.append(target_flag)
     cmd += [
         "-std=c++17",
         "-municode",
@@ -198,6 +242,8 @@ def build_cpp(clangpp_path, arch, out_path):
     if result.returncode != 0:
         print(f"[!] Compilation failed with exit code {result.returncode}")
         return False
+    if not verify_pe_machine(out_path, arch):
+        return False
 
     print(f"[*] Successfully built: {out_path}")
     return True
@@ -223,18 +269,16 @@ def find_cargo():
     return None
 
 
-def rust_target_triple(arch, cargo):
-    triple = RUST_ARCH_TARGETS.get(arch)
-    if triple is None:
-        # Resolve the host triple via cargo, so we build for whatever this
-        # machine is (x86_64 or aarch64 hosts alike).
-        res = subprocess.run(
-            [cargo, "-vV"], capture_output=True, text=True, env=cargo_env()
-        )
-        for line in (res.stdout or "").splitlines():
-            if line.startswith("host:"):
-                return line.split(":", 1)[1].strip()
-        return None
+def rust_target_triple(arch, cargo=None):
+    # Always explicit (see RUST_ARCH_TARGETS note); cargo host detection kept
+    # only as a sanity check that the requested triple exists.
+    triple = RUST_ARCH_TARGETS[arch]
+    if cargo is None:
+        return triple
+    res = subprocess.run([cargo, "-vV"], capture_output=True, text=True, env=cargo_env())
+    hosts = [line.split(":", 1)[1].strip() for line in (res.stdout or "").splitlines() if line.startswith("host:")]
+    if hosts and hosts[0] != triple:
+        print(f"[*] Cross-compiling: host={hosts[0]} -> target={triple}")
     return triple
 
 
@@ -273,7 +317,12 @@ def build_rust(arch):
 
     out_path = output_exe("rust", arch)
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    if not verify_pe_machine(src, arch):
+        print("[!] Refusing to publish an executable of the wrong architecture.")
+        return False
     shutil.copy2(src, out_path)
+    if not verify_pe_machine(out_path, arch):  # belt-and-braces on the copy
+        return False
     print(f"[*] Successfully built: {out_path}")
     return True
 
@@ -320,8 +369,8 @@ def main():
     parser.add_argument(
         "--variant",
         choices=("all", "cpp", "rust"),
-        default="all",
-        help="which variant(s) to build (default: all)",
+        default="rust",
+        help="which variant(s) to build (default: rust; legacy cpp is reference code)",
     )
     parser.add_argument(
         "--arch",
@@ -361,11 +410,11 @@ def main():
 
     ok = True
 
-    if args.variant in ("all", "cpp"):
-        ok = build_cpp_variant(args.arch, args.sha256) and ok
-
     if args.variant in ("all", "rust"):
         ok = build_rust(args.arch) and ok
+
+    if args.variant in ("all", "cpp"):
+        ok = build_cpp_variant(args.arch, args.sha256) and ok
 
     if not ok:
         print("[!] One or more build legs FAILED.")
