@@ -43,7 +43,7 @@ if (-not $isAdministrator) {
     }
 
     Start-Process `
-        -FilePath 'powershell.exe' `
+        -FilePath (Join-Path $PSHOME 'powershell.exe') `
         -Verb RunAs `
         -ArgumentList $arguments
 

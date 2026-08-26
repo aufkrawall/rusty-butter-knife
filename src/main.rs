@@ -28,11 +28,14 @@ mod util;
 mod winfmt;
 
 use app::{
-    EXIT_ABORTED, EXIT_ALREADY_RUNNING, EXIT_FATAL_EXCEPTION, EXIT_FATAL_UNKNOWN, EXIT_OK,
-    EXIT_TI_CHILD_FAILED, EXIT_TI_RELAUNCH_FAILED,
+    EXIT_ABORTED, EXIT_ALREADY_RUNNING, EXIT_BAD_ARGS, EXIT_FATAL_EXCEPTION, EXIT_FATAL_UNKNOWN,
+    EXIT_OK, EXIT_TI_CHILD_FAILED, EXIT_TI_RELAUNCH_FAILED,
 };
 use logging::log_line;
-use options::{apply_component_args, initialize_component_selection, parse_args, print_usage};
+use options::{
+    apply_component_args_and_collect_problems, initialize_component_selection, parse_args,
+    print_usage,
+};
 use sysinfo::is_trusted_installer;
 use types::Options;
 
@@ -76,29 +79,24 @@ fn write_status_json(exit_code: i32, status: &str, detail: &str) {
     let _ = std::fs::write(path, json);
 }
 
-/// Outcome of the inner run: `Early(code)` mirrors C++ `return code;` inside
-/// the try block (which SKIPS the pause block), `Completed(code)` falls
-/// through to the pause block, mirroring end-of-try / catch paths.
-enum Flow {
-    Early(i32),
-    Completed(i32),
-}
-
 /// Port of the wmain try-block. Errors returned as Err(String) map onto the
-/// C++ catch(std::exception) path.
-fn wmain_try(args: &[String]) -> Result<Flow, String> {
+/// C++ catch(std::exception) path. (The former Early/Completed split existed
+/// only to skip the pause block; pause is now an explicit finalization rule
+/// applied uniformly — fixing the audit's pause-flow bug where TI orchestration
+/// paths closed the elevated wizard window despite --pause.)
+fn wmain_try(args: &[String]) -> Result<i32, String> {
     let opts: Options = parse_args(args);
 
     if opts.show_help {
         print_usage();
-        return Ok(Flow::Early(EXIT_OK));
+        return Ok(EXIT_OK);
     }
     if opts.show_version {
         console::out(&format!(
             "GreenPostInstallDebloatNative version {}\n",
             app::GPD_VERSION
         ));
-        return Ok(Flow::Early(EXIT_OK));
+        return Ok(EXIT_OK);
     }
 
     app::init_app(opts);
@@ -114,10 +112,10 @@ fn wmain_try(args: &[String]) -> Result<Flow, String> {
                 if c.optional { " (optional)" } else { "" }
             ));
         }
-        return Ok(Flow::Early(EXIT_OK));
+        return Ok(EXIT_OK);
     }
 
-    apply_component_args(args);
+    apply_component_args_and_collect_problems(args);
 
     // Wizard default keeps the NVIDIA driver-update/profile-updater stack:
     // deselect UpdateAndProfileUpdater unless explicitly re-enabled.
@@ -135,7 +133,7 @@ fn wmain_try(args: &[String]) -> Result<Flow, String> {
         menu::interactive_menu();
     }
     if app::user_quit_requested() {
-        return Ok(Flow::Early(EXIT_OK));
+        return Ok(EXIT_OK);
     }
 
     let log_path_display = app::run(|s| s.log_path.to_string_lossy().into_owned());
@@ -143,8 +141,33 @@ fn wmain_try(args: &[String]) -> Result<Flow, String> {
         "INFO",
         &format!("Run log (all stages of this run append to this single file): {log_path_display}"),
     );
-    for unknown in app::opts(|o| o.unknown_args.clone()) {
-        log_line("WARN", &format!("Ignoring unknown option: {unknown}"));
+    // CLI argument gate (audit: execute mode must reject malformed or
+    // unknown inputs BEFORE any mutation). Dry runs stay lenient.
+    let bad_args = app::opts(|o| o.unknown_args.clone());
+    if !bad_args.is_empty() {
+        let execute_mode = app::opts(|o| o.execute);
+        for bad in &bad_args {
+            if execute_mode {
+                log_line("ERROR", &format!("Invalid or unknown argument: {bad}"));
+            } else {
+                log_line(
+                    "WARN",
+                    &format!("Ignoring invalid or unknown argument: {bad}"),
+                );
+            }
+        }
+        if execute_mode {
+            console::out(
+                "Run with --help to see valid arguments.
+",
+            );
+            write_status_json(
+                EXIT_BAD_ARGS,
+                "failed",
+                "invalid or unknown command-line arguments",
+            );
+            return Ok(EXIT_BAD_ARGS);
+        }
     }
 
     // Bare double-click launch in EXECUTE mode without elevation: the wizard
@@ -165,7 +188,7 @@ fn wmain_try(args: &[String]) -> Result<Flow, String> {
                     "INFO",
                     &format!("Elevated instance finished with exit code {child_exit}."),
                 );
-                return Ok(Flow::Early(child_exit));
+                return Ok(child_exit);
             }
             None => {
                 log_line(
@@ -200,7 +223,7 @@ fn wmain_try(args: &[String]) -> Result<Flow, String> {
                 "failed",
                 "single-instance execute-mode mutex unavailable",
             );
-            return Ok(Flow::Early(EXIT_ALREADY_RUNNING));
+            return Ok(EXIT_ALREADY_RUNNING);
         } else if existed {
             log_line(
                 "FATAL",
@@ -211,55 +234,71 @@ fn wmain_try(args: &[String]) -> Result<Flow, String> {
                 "failed",
                 "another execute-mode instance is running",
             );
-            return Ok(Flow::Early(EXIT_ALREADY_RUNNING));
+            return Ok(EXIT_ALREADY_RUNNING);
         }
         Some(guard)
     } else {
         None
     };
 
-    let should_attempt_ti =
-        app::opts(|o| o.execute && !o.ti_child && !o.allow_admin_fallback && o.attempt_ti_relaunch)
-            && !is_trusted_installer();
-    if should_attempt_ti {
-        let ti_result = tasksched::attempt_trusted_installer_relaunch();
-        if ti_result.child_status_seen && ti_result.child_succeeded {
+    let ti_preflight = app::opts(|o| o.execute && !o.ti_child && !o.allow_admin_fallback)
+        && !is_trusted_installer();
+    if ti_preflight {
+        if !app::opts(|o| o.attempt_ti_relaunch) {
+            // Audit: with --no-ti-relaunch and no admin fallback there is no
+            // path into a privileged run; exiting via run_cleanup's generic
+            // error produced exit code 1 instead of the documented TI code.
             log_line(
+                "FATAL",
+                "Destructive execution requires TrustedInstaller, but relaunch was disabled (--no-ti-relaunch) and --allow-admin-fallback was not specified.",
+            );
+            write_status_json(
+                EXIT_TI_RELAUNCH_FAILED,
+                "failed",
+                "TI relaunch disabled without admin fallback",
+            );
+            return Ok(EXIT_TI_RELAUNCH_FAILED);
+        }
+        {
+            let ti_result = tasksched::attempt_trusted_installer_relaunch();
+            if ti_result.child_status_seen && ti_result.child_succeeded {
+                log_line(
                 "INFO",
                 "Parent process finished after TI child completion. Everything (including the worker's report) is in the shared run log.",
             );
-            return Ok(Flow::Early(EXIT_OK));
-        }
-        if ti_result.child_status_seen {
-            log_line(
-                "FATAL",
-                &format!("Elevated TI child reported failure: {}", ti_result.detail),
-            );
-            write_status_json(
-                EXIT_TI_CHILD_FAILED,
-                "failed",
-                &format!("TI child failed: {}", ti_result.detail),
-            );
-            return Ok(Flow::Early(EXIT_TI_CHILD_FAILED));
-        }
-        if !app::opts(|o| o.allow_admin_fallback) {
-            let detail_suffix = if ti_result.detail.is_empty() {
-                ".".to_string()
-            } else {
-                format!(" ({})", ti_result.detail)
-            };
-            log_line(
+                return Ok(EXIT_OK);
+            }
+            if ti_result.child_status_seen {
+                log_line(
+                    "FATAL",
+                    &format!("Elevated TI child reported failure: {}", ti_result.detail),
+                );
+                write_status_json(
+                    EXIT_TI_CHILD_FAILED,
+                    "failed",
+                    &format!("TI child failed: {}", ti_result.detail),
+                );
+                return Ok(EXIT_TI_CHILD_FAILED);
+            }
+            if !app::opts(|o| o.allow_admin_fallback) {
+                let detail_suffix = if ti_result.detail.is_empty() {
+                    ".".to_string()
+                } else {
+                    format!(" ({})", ti_result.detail)
+                };
+                log_line(
                 "FATAL",
                 &format!(
                     "TrustedInstaller relaunch failed{detail_suffix} and --allow-admin-fallback was not specified."
                 ),
             );
-            write_status_json(
-                EXIT_TI_RELAUNCH_FAILED,
-                "failed",
-                &format!("TrustedInstaller relaunch failed: {}", ti_result.detail),
-            );
-            return Ok(Flow::Early(EXIT_TI_RELAUNCH_FAILED));
+                write_status_json(
+                    EXIT_TI_RELAUNCH_FAILED,
+                    "failed",
+                    &format!("TrustedInstaller relaunch failed: {}", ti_result.detail),
+                );
+                return Ok(EXIT_TI_RELAUNCH_FAILED);
+            }
         }
     }
 
@@ -268,10 +307,10 @@ fn wmain_try(args: &[String]) -> Result<Flow, String> {
             let aborted = app::run(|s| s.aborted);
             if aborted {
                 write_status_json(EXIT_ABORTED, "aborted", "run aborted by user request");
-                Ok(Flow::Completed(EXIT_ABORTED))
+                Ok(EXIT_ABORTED)
             } else {
                 write_status_json(EXIT_OK, "ok", "completed");
-                Ok(Flow::Completed(EXIT_OK))
+                Ok(EXIT_OK)
             }
         }
         Err(msg) => Err(msg),
@@ -297,6 +336,11 @@ fn relaunch_elevated_for_wizard() -> Option<i32> {
 
 /// Pause helper mirroring the tail of wmain.
 fn maybe_pause_on_exit() {
+    // --help/--version/--list-components exit before option initialization;
+    // they carry no menu/pause state by definition.
+    if !app::opts_initialized() {
+        return;
+    }
     let (no_pause, ti_child, pause_on_exit) =
         app::opts(|o| (o.no_pause, o.ti_child, o.pause_on_exit));
     if !no_pause
@@ -318,28 +362,26 @@ fn main() {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| wmain_try(&args)));
 
     let exit_code = match result {
-        Ok(Ok(flow)) => flow,
+        Ok(Ok(code)) => code,
         Ok(Err(msg)) => {
             // catch(std::exception) — message available.
             logging::log_line("FATAL", &msg);
             let _ = std::panic::catch_unwind(report::write_report);
             write_status_json(EXIT_FATAL_EXCEPTION, "fatal", &msg);
-            Flow::Completed(EXIT_FATAL_EXCEPTION)
+            EXIT_FATAL_EXCEPTION
         }
         Err(_payload) => {
             // catch(...) — unknown fatal exception.
             logging::log_line("FATAL", "Unknown fatal exception.");
             let _ = std::panic::catch_unwind(report::write_report);
             write_status_json(EXIT_FATAL_UNKNOWN, "fatal", "unknown fatal exception");
-            Flow::Completed(EXIT_FATAL_UNKNOWN)
+            EXIT_FATAL_UNKNOWN
         }
     };
 
-    match exit_code {
-        Flow::Early(code) => std::process::exit(code),
-        Flow::Completed(code) => {
-            maybe_pause_on_exit();
-            std::process::exit(code);
-        }
-    }
+    // Pause is a uniform finalization rule (audit pause-flow fix): applied to
+    // every outcome so an elevated wizard instance keeps its window open even
+    // on early orchestration paths such as TI relaunch success/failure.
+    maybe_pause_on_exit();
+    std::process::exit(exit_code);
 }

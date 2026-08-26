@@ -156,7 +156,7 @@ Set `$env:GPD_NO_PAUSE = 1` when automating.
 | `--list-components` | Print all component keys and their state, then exit. |
 | `--no-ti-relaunch` | Do not attempt TrustedInstaller scheduled-task relaunch. |
 | `--allow-admin-fallback` | Permit destructive execution as Administrator. |
-| `--ti-wait-seconds N` | Parent wait timeout for TI child (default 600; `=N` form also accepted). |
+| `--ti-wait-seconds N` | Parent wait timeout for TI child (default 600, clamped to 15–7200 seconds; `=N` form also accepted). |
 | `--status-file PATH` | Write child run status JSON to PATH (legacy diagnostics handoff; not used by the current TrustedInstaller flow). |
 | `--log-dir PATH` | Base directory for the log file (default: beside the executable). |
 | `--log-file PATH` | Use exactly this log file; all processes of a run append to it, so one run leaves one log. |
@@ -179,6 +179,7 @@ Set `$env:GPD_NO_PAUSE = 1` when automating.
 | 10 | TrustedInstaller relaunch failed or was not permitted. |
 | 11 | Elevated TI child reported failure. |
 | 12 | Another execute-mode instance is already running, or the single-instance mutex could not be created (destructive runs are refused rather than left unserialized). |
+| 13 | Invalid or unknown argument rejected before any change (execute mode is strict; dry runs only warn). |
 
 ---
 

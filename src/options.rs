@@ -39,7 +39,8 @@ Core switches:\n\
 TrustedInstaller behavior:\n\
   --no-ti-relaunch                Do not attempt automatic TrustedInstaller scheduled-task relaunch.\n\
   --allow-admin-fallback          Permit destructive execution as Administrator if TI relaunch fails/skipped.\n\
-  --ti-wait-seconds N             Parent wait timeout for TI child. Default 600.\n\
+  --ti-wait-seconds N             Parent wait timeout for TI child. Default 600;
+                                  values are clamped to 15..=7200 seconds.\n\
                                   Component selections made in the interactive menu are forwarded to the elevated child.\n\n\
 Optional component inclusions:\n\
   --include-ngx --include-hdaudio --include-physx --include-notebook-optimus\n\
@@ -63,18 +64,64 @@ Miscellaneous:\n\
 Exit codes:\n\
   0 success | 1 fatal exception | 2 unknown fatal | 3 aborted by user\n\
   10 TrustedInstaller relaunch failed/not permitted | 11 elevated child reported failure\n\
-  12 another execute-mode instance is already running\n\n",
+  12 another execute-mode instance is already running | 13 invalid or unknown argument\n\n",
         crate::app::GPD_VERSION
     );
     console::out(&text);
 }
 
-/// Port of `parseBoolAssignment`.
-pub fn parse_bool_assignment(arg: &str, name: &str) -> Option<bool> {
+/// Port of `parseBoolAssignment`. STRICT variant: recognized boolean words
+/// only; anything else is malformed so destructive mode can reject it
+/// instead of silently treating garbage as "on".
+#[derive(Debug, PartialEq, Eq)]
+pub enum BoolAssign {
+    /// Argument does not carry this flag's assignment at all.
+    NotMine,
+    /// Well-formed `<flag>=on|off|true|false|1|0|yes|no` (any case).
+    Assigned(bool),
+    /// `<flag>=<garbage>` present but unparsable.
+    Malformed(String),
+}
+
+pub fn parse_bool_assignment(arg: &str, name: &str) -> BoolAssign {
     let low = to_lower(arg);
     let prefix = format!("{}=", to_lower(name));
-    let v = low.strip_prefix(&prefix)?;
-    Some(!(v == "false" || v == "0" || v == "no" || v == "off"))
+    let v = match low.strip_prefix(&prefix) {
+        Some(v) => v,
+        None => return BoolAssign::NotMine,
+    };
+    match v {
+        "true" | "1" | "yes" | "on" => BoolAssign::Assigned(true),
+        "false" | "0" | "no" | "off" => BoolAssign::Assigned(false),
+        other => BoolAssign::Malformed(other.to_string()),
+    }
+}
+
+/// Numeric-or-error variant of `atoi_prefix`: `None` when the input carries
+/// no digits at all (e.g. `--ti-wait-seconds=abc`).
+fn seconds_value_or_none(s: &str) -> Option<i64> {
+    let has_digit = s.chars().any(|c| c.is_ascii_digit());
+    if !has_digit {
+        return None;
+    }
+    Some(atoi_prefix(s))
+}
+
+const TI_WAIT_MIN_SECS: i64 = 15;
+/// The scheduled task itself self-limits at PT2H; waiting longer than 2 h
+/// cannot observe a live child anymore, so clamp there.
+const TI_WAIT_MAX_SECS: i64 = 7200;
+
+fn apply_ti_wait_seconds(raw: &str, opt: &mut Options) -> Option<String> {
+    match seconds_value_or_none(raw) {
+        Some(v) => {
+            opt.ti_wait_seconds = v.clamp(TI_WAIT_MIN_SECS, TI_WAIT_MAX_SECS);
+            None
+        }
+        None => Some(format!(
+            "--ti-wait-seconds={raw} is not a number (allowed range {TI_WAIT_MIN_SECS}..={TI_WAIT_MAX_SECS})"
+        )),
+    }
 }
 
 /// Port of `parseArgs`.
@@ -152,8 +199,16 @@ pub fn parse_args(args: &[String]) -> Options {
             opt.pause_on_exit = true;
         } else if low == "--no-color" {
             opt.no_color = true;
-        } else if let Some(v) = parse_bool_assignment(&a, "--preserve-nvcontainers") {
+        } else if let BoolAssign::Assigned(v) = parse_bool_assignment(&a, "--preserve-nvcontainers")
+        {
             opt.preserve_nv_containers = v;
+        } else if let BoolAssign::Malformed(_v) =
+            parse_bool_assignment(&a, "--preserve-nvcontainers")
+        {
+            opt.unknown_args.push(a.clone());
+            console::err_out(&format!(
+                "Invalid value in '{a}' (use on/off/true/false/1/0/yes/no)\n"
+            ));
         } else if low == "--preserve-nvcontainers" {
             opt.preserve_nv_containers = true;
         } else if (low == "--status-file"
@@ -168,11 +223,17 @@ pub fn parse_args(args: &[String]) -> Options {
                 "--status-file" => opt.status_file = v,
                 "--log-dir" => opt.log_dir_override = v,
                 "--log-file" => opt.log_file_override = v,
-                "--ti-wait-seconds" => opt.ti_wait_seconds = 15.max(atoi_prefix(&v)),
+                "--ti-wait-seconds" => {
+                    if let Some(problem) = apply_ti_wait_seconds(&v, &mut opt) {
+                        opt.unknown_args.push(problem);
+                    }
+                }
                 _ => {}
             }
         } else if let Some(v) = a.strip_prefix("--ti-wait-seconds=") {
-            opt.ti_wait_seconds = 15.max(atoi_prefix(v));
+            if let Some(problem) = apply_ti_wait_seconds(v, &mut opt) {
+                opt.unknown_args.push(problem);
+            }
         } else if let Some(v) = a.strip_prefix("--status-file=") {
             opt.status_file = v.to_string();
         } else if let Some(v) = a.strip_prefix("--log-file=") {
@@ -190,21 +251,37 @@ pub fn parse_args(args: &[String]) -> Options {
     opt
 }
 
-/// Port of `applyComponentArgs` (case-insensitive key matching).
-pub fn apply_component_args(args: &[String]) {
+/// Port of `applyComponentArgs` (case-insensitive key AND flag spelling).
+/// Returns problems instead of only printing warnings, so execute mode can
+/// reject malformed component selections before any mutation.
+pub fn apply_component_args(args: &[String]) -> Vec<String> {
+    let mut problems: Vec<String> = Vec::new();
     for a in args {
-        let Some(spec) = a.strip_prefix("--component=") else {
-            continue;
-        };
-        let low_a = to_lower(a);
-        if !low_a.starts_with("--component=") {
+        // Mixed-case spellings such as --COMPONENT=... previously fell
+        // through silently; route via the lowercased prefix.
+        if !to_lower(a).starts_with("--component=") {
             continue;
         }
+        let spec = &a["--component=".len()..];
         let sep = spec.find([':', '=']);
-        let Some(sep) = sep else { continue };
+        let Some(sep) = sep else {
+            problems.push(format!(
+                "{a} is missing an on/off state (use --component=Key:on|off)"
+            ));
+            continue;
+        };
         let key = &spec[..sep];
-        let val = to_lower(&spec[sep + 1..]);
-        let on = !(val == "false" || val == "0" || val == "off" || val == "no");
+        let val_raw = &spec[sep + 1..];
+        let on = match to_lower(val_raw).as_str() {
+            "on" | "true" | "1" | "yes" => true,
+            "off" | "false" | "0" | "no" => false,
+            other => {
+                problems.push(format!(
+                    "{a}: unknown state '{other}' (use on/off/true/false/1/0/yes/no)"
+                ));
+                continue;
+            }
+        };
         let key_low = to_lower(key);
         let mut matched = false;
         app::enabled_mut(|m| {
@@ -226,10 +303,24 @@ pub fn apply_component_args(args: &[String]) {
                 }
                 valid
             });
-            console::err_out(&format!(
-                "Warning: unknown component key in '{a}'. Valid keys: {valid}\n"
+            problems.push(format!(
+                "unknown component key in '{a}'. Valid keys: {valid}"
             ));
         }
+    }
+    problems
+}
+
+/// Apply component args and merge any problems into the shared
+/// unknown-args list so the execute-mode pre-mutation gate sees them.
+pub fn apply_component_args_and_collect_problems(args: &[String]) {
+    let problems = apply_component_args(args);
+    for p in problems {
+        console::err_out(&format!(
+            "Invalid component selection: {p}
+"
+        ));
+        app::opts_mut(|o| o.unknown_args.push(p));
     }
 }
 
@@ -280,28 +371,100 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_bool_assignment_variants() {
+    fn strict_bool_assignment_variants() {
         assert_eq!(
             parse_bool_assignment("--preserve-nvcontainers=off", "--preserve-nvcontainers"),
-            Some(false)
+            BoolAssign::Assigned(false)
         );
         assert_eq!(
             parse_bool_assignment("--preserve-nvcontainers=ON", "--preserve-nvcontainers"),
-            Some(true)
+            BoolAssign::Assigned(true)
         );
         assert_eq!(
-            parse_bool_assignment("--preserve-nvcontainers=0", "--preserve-nvcontainers"),
-            Some(false)
+            parse_bool_assignment("--PRESERVE-NVCONTAINERS=0", "--preserve-nvcontainers"),
+            BoolAssign::Assigned(false)
         );
         // Bare form has no '=' assignment.
         assert_eq!(
             parse_bool_assignment("--preserve-nvcontainers", "--preserve-nvcontainers"),
-            None
+            BoolAssign::NotMine
         );
         // Different flag never matches.
         assert_eq!(
             parse_bool_assignment("--component=x:on", "--preserve-nvcontainers"),
-            None
+            BoolAssign::NotMine
         );
+        // Malformed values are now DETECTED, not silently true.
+        assert_eq!(
+            parse_bool_assignment("--preserve-nvcontainers=maybe", "--preserve-nvcontainers"),
+            BoolAssign::Malformed("maybe".to_string())
+        );
+        assert_eq!(
+            parse_bool_assignment("--preserve-nvcontainers=", "--preserve-nvcontainers"),
+            BoolAssign::Malformed(String::new())
+        );
+    }
+
+    #[test]
+    fn ti_wait_seconds_validation_and_clamping() {
+        let mut opt = Options::default();
+        assert!(apply_ti_wait_seconds("90", &mut opt).is_none());
+        assert_eq!(opt.ti_wait_seconds, 90);
+        // Below minimum clamps up.
+        assert!(apply_ti_wait_seconds("1", &mut opt).is_none());
+        assert_eq!(opt.ti_wait_seconds, 15);
+        // Above the task's PT2H self-limit clamps down.
+        assert!(apply_ti_wait_seconds("99999999999", &mut opt).is_none());
+        assert_eq!(opt.ti_wait_seconds, 7200);
+        // Non-numeric is rejected outright.
+        assert!(apply_ti_wait_seconds("abc", &mut opt).is_some());
+    }
+
+    #[test]
+    fn unknown_and_malformed_args_are_collected_for_execute_rejection() {
+        // Unknown option lands in unknown_args...
+        let opts = parse_args(&["--dry-run".into(), "--frobnicate".into()]);
+        assert_eq!(opts.unknown_args.len(), 1);
+        assert!(!opts.execute);
+        // ...and a malformed preserve assignment is collected too.
+        let opts = parse_args(&["--dry-run".into(), "--preserve-nvcontainers=bogus".into()]);
+        assert_eq!(opts.unknown_args.len(), 1);
+        // execute stays false: the rejection path can never fire from this.
+        assert!(!opts.execute);
+    }
+
+    #[test]
+    fn mixed_case_component_flag_now_applies() {
+        crate::app::init_app(Options::default());
+        initialize_component_selection();
+        let before = crate::app::enabled(|m| *m.get("NGX").unwrap());
+        assert!(!before, "test expects NGX to start deselected");
+        let arg = "--COMPONENT=ngx:on".to_string();
+        let problems = apply_component_args(std::slice::from_ref(&arg));
+        assert!(
+            problems.is_empty(),
+            "mixed-case flag must apply: {problems:?}"
+        );
+        let after = crate::app::enabled(|m| *m.get("NGX").unwrap());
+        assert!(after, "mixed-case flag must toggle the component");
+    }
+
+    #[test]
+    fn component_problems_collected_not_swallowed() {
+        crate::app::init_app(Options::default());
+        initialize_component_selection();
+        // Missing separator.
+        let p = apply_component_args(&["--component=NGX".into()]);
+        assert_eq!(p.len(), 1, "missing state must be reported");
+        // Garbage state.
+        let p = apply_component_args(&["--component=NGX:sometimes".into()]);
+        assert_eq!(p.len(), 1);
+        // Unknown key lists valid keys.
+        let p = apply_component_args(&["--component=Bogus:on".into()]);
+        assert_eq!(p.len(), 1);
+        assert!(p[0].contains("Telemetry"), "lists valid keys");
+        // A well-formed call is silent.
+        let p = apply_component_args(&["--component=NGX:on".into()]);
+        assert!(p.is_empty());
     }
 }

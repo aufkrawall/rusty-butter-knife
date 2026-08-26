@@ -18,6 +18,7 @@ pub const GPD_VERSION: &str = "1.5.0";
 pub const K_TI_TASK_PREFIX: &str = "NvDebloatTI-";
 
 // Exit codes (contract surface: PowerShell wrapper + parent/child handoff).
+// Exit codes (contract surface: PowerShell wrapper + parent/child handoff).
 pub const EXIT_OK: i32 = 0;
 pub const EXIT_FATAL_EXCEPTION: i32 = 1;
 pub const EXIT_FATAL_UNKNOWN: i32 = 2;
@@ -25,6 +26,8 @@ pub const EXIT_ABORTED: i32 = 3;
 pub const EXIT_TI_RELAUNCH_FAILED: i32 = 10;
 pub const EXIT_TI_CHILD_FAILED: i32 = 11;
 pub const EXIT_ALREADY_RUNNING: i32 = 12;
+/// Invalid or unknown command-line argument rejected before any mutation.
+pub const EXIT_BAD_ARGS: i32 = 13;
 
 static OPTS: Mutex<Option<Options>> = Mutex::new(None);
 static RUN: Mutex<Option<RunState>> = Mutex::new(None);
@@ -58,6 +61,13 @@ fn lock<'a, T>(m: &'a Mutex<T>) -> std::sync::MutexGuard<'a, T> {
 pub fn opts<R>(f: impl FnOnce(&Options) -> R) -> R {
     let g = lock(&OPTS);
     f(g.as_ref().expect("options initialized"))
+}
+
+/// True once init_app ran. Pause-on-exit consults this because --help/
+/// --version/--list-components exit BEFORE initialization; without the
+/// guard, the uniform pause rule would panic on those paths.
+pub fn opts_initialized() -> bool {
+    lock(&OPTS).is_some()
 }
 
 pub fn opts_mut<R>(f: impl FnOnce(&mut Options) -> R) -> R {
