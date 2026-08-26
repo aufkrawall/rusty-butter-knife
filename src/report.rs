@@ -174,31 +174,65 @@ pub fn write_report() {
 
 /// Port of `verifyCandidateRemoval`: re-checks every discovered candidate path
 /// after processing and appends a "Post-run existence check" section.
+/// Pure decision core for one candidate's post-run report row. `scheduled`
+/// is true only when MoveFileExW verifiably succeeded for that exact path
+/// (REPORT-01); verification I/O failures are their own outcome so they
+/// cannot be reported as success (REPORT-02).
+#[derive(Debug, PartialEq, Eq)]
+pub enum VerifyOutcome {
+    DryRun,
+    ScheduledReboot,
+    Skipped(String),
+    Failed(String),
+    NoAction,
+    StillPresent,
+}
+
+pub fn verify_outcome_for(
+    execute: bool,
+    status: &str,
+    detail: &str,
+    scheduled: bool,
+) -> VerifyOutcome {
+    if !execute || status == "DRYRUN" {
+        return VerifyOutcome::DryRun;
+    }
+    if scheduled && status != "WARN" && status != "SKIP" {
+        return VerifyOutcome::ScheduledReboot;
+    }
+    match status {
+        "SKIP" => VerifyOutcome::Skipped(detail.to_string()),
+        "WARN" | "FATAL" => VerifyOutcome::Failed(detail.to_string()),
+        "" => VerifyOutcome::NoAction,
+        _ => VerifyOutcome::StillPresent,
+    }
+}
+
 pub fn verify_candidate_removal() {
     // Latest DeletePath/ScheduleDelete outcome per candidate path.
     let mut path_outcome: BTreeMap<String, (String, String)> = BTreeMap::new();
     app::run(|s| {
         for a in &s.actions {
-            if a.kind == "DeletePath" {
+            if a.kind == "DeletePath" || a.kind == "ScheduleDelete" {
                 path_outcome.insert(a.path.clone(), (a.status.clone(), a.detail.clone()));
-            } else if a.kind == "ScheduleDelete" {
-                path_outcome.insert(
-                    a.path.clone(),
-                    ("SCHEDULED_REBOOT".to_string(), a.detail.clone()),
-                );
             }
         }
     });
 
     let execute = app::opts(|o| o.execute);
     let candidates = app::run(|s| s.candidates.clone());
+    let reboot_scheduled = app::run(|s| s.reboot_scheduled_paths.clone());
 
     let mut remaining: usize = 0;
     let mut pending_reboot: usize = 0;
     let mut dry_run: usize = 0;
+    let mut errors: usize = 0;
     let mut ss = String::from("\n==== Post-run existence check ====\n");
     for c in &candidates {
-        if !c.path.exists() {
+        // Tri-state no-follow probe: metadata failure must not pass as
+        // "successfully deleted" (REPORT-02).
+        let stat = crate::fsutil::path_kind_no_follow(&c.path);
+        if matches!(stat, Ok(crate::fsutil::PathKind::Missing)) {
             continue; // gone: exactly what we want
         }
         remaining += 1;
@@ -206,22 +240,26 @@ pub fn verify_candidate_removal() {
         let outcome = path_outcome.get(path_key.as_str());
         let status = outcome.map(|(st, _)| st.as_str()).unwrap_or("");
         let detail = outcome.map(|(_, d)| d.as_str()).unwrap_or("");
-        let reason;
-        if !execute || status == "DRYRUN" {
-            reason = "dry-run: not attempted".to_string();
-            dry_run += 1;
-        } else if status == "SCHEDULED_REBOOT" {
-            reason = "scheduled for deletion at next reboot".to_string();
-            pending_reboot += 1;
-        } else if status == "SKIP" {
-            reason = format!("skipped: {detail}");
-        } else if status == "WARN" {
-            reason = format!("deletion failed: {detail}");
-        } else if status.is_empty() {
-            reason = "no action recorded".to_string();
+        let scheduled = reboot_scheduled.contains(&crate::util::to_lower(&path_key));
+        let reason = if let Err(e) = &stat {
+            errors += 1;
+            format!("verification error: {e}")
         } else {
-            reason = "still present".to_string();
-        }
+            match verify_outcome_for(execute, status, detail, scheduled) {
+                VerifyOutcome::DryRun => {
+                    dry_run += 1;
+                    "dry-run: not attempted".to_string()
+                }
+                VerifyOutcome::ScheduledReboot => {
+                    pending_reboot += 1;
+                    "scheduled for deletion at next reboot".to_string()
+                }
+                VerifyOutcome::Skipped(d) => format!("skipped: {d}"),
+                VerifyOutcome::Failed(d) => format!("deletion failed: {d}"),
+                VerifyOutcome::NoAction => "no action recorded".to_string(),
+                VerifyOutcome::StillPresent => "still present".to_string(),
+            }
+        };
         ss.push_str(&format!(
             "STILL EXISTS [{}] {}\n",
             reason,
@@ -249,6 +287,11 @@ pub fn verify_candidate_removal() {
         );
         if pending_reboot > 0 {
             summary.push_str(&format!(" ({pending_reboot} pending reboot deletion)"));
+        }
+        if errors > 0 {
+            summary.push_str(&format!(
+                " ({errors} existence checks failed with I/O errors)"
+            ));
         }
         if dry_run > 0 {
             summary.push_str(&format!(" ({dry_run} not attempted in dry-run)"));
@@ -408,4 +451,52 @@ pub fn run_cleanup() -> Result<(), String> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_reboot_schedule_is_not_reported_as_pending() {
+        // A WARN ScheduleDelete record with NO successful-set entry must NOT
+        // become SCHEDULED_REBOOT (REPORT-01).
+        assert_eq!(
+            verify_outcome_for(true, "WARN", "0x80070005 access denied", false),
+            VerifyOutcome::Failed("0x80070005 access denied".to_string())
+        );
+    }
+
+    #[test]
+    fn successful_schedule_maps_to_pending_reboot() {
+        assert_eq!(
+            verify_outcome_for(true, "INFO", "Pending delete at reboot", true),
+            VerifyOutcome::ScheduledReboot
+        );
+        // ...and a stale action record never overrides a real failure:
+        assert_eq!(
+            verify_outcome_for(true, "WARN", "MoveFileExW failed", true),
+            VerifyOutcome::Failed("MoveFileExW failed".to_string())
+        );
+    }
+
+    #[test]
+    fn dry_run_and_skip_and_noaction_rows() {
+        assert_eq!(
+            verify_outcome_for(false, "DRYRUN", "", false),
+            VerifyOutcome::DryRun
+        );
+        assert_eq!(
+            verify_outcome_for(true, "SKIP", "component deselected", false),
+            VerifyOutcome::Skipped("component deselected".to_string())
+        );
+        assert_eq!(
+            verify_outcome_for(true, "", "", false),
+            VerifyOutcome::NoAction
+        );
+        assert_eq!(
+            verify_outcome_for(true, "INFO", "Deleted file", false),
+            VerifyOutcome::StillPresent
+        );
+    }
 }

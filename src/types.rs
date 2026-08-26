@@ -119,6 +119,10 @@ pub struct RunState {
     pub actions: Vec<ActionRecord>,
     pub candidates: Vec<Candidate>,
     pub aborted: bool,
+    /// Lowercased paths whose MoveFileExW reboot-delete scheduling verifiably
+    /// SUCCEEDED (REPORT-01: failed schedules must never surface as
+    /// "scheduled for deletion at next reboot").
+    pub reboot_scheduled_paths: HashSet<String>,
     // Filled by verify_candidate_removal() after processing.
     pub post_run_check_done: bool,
     pub paths_remaining_after_run: i64,

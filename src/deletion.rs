@@ -3,6 +3,7 @@
 //! Ports of `takeOwnershipIfRequested`, `extendedLengthPath`,
 //! `clearBlockingAttributes`, `scheduleDeleteOne/Tree`, `deleteCandidate`.
 
+use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use crate::app;
@@ -96,7 +97,8 @@ fn set_attrs_normal(path: &Path) -> bool {
 }
 
 /// Read-only/system attributes make DeleteFileW and removals fail; clear them
-/// recursively without following symlinks. Port of `clearBlockingAttributes`.
+/// recursively without following symlinks or crossing reparse points
+/// (FS-01). Port of `clearBlockingAttributes`.
 fn clear_blocking_attributes(root: &Path) {
     set_attrs_normal(root);
     fn walk_clear(dir: &Path) {
@@ -106,18 +108,27 @@ fn clear_blocking_attributes(root: &Path) {
         for entry in entries.flatten() {
             let path = entry.path();
             set_attrs_normal(&path);
-            let is_real_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            // Only REAL directories are descended into: reparse points get
+            // surface attribute clearing only.
+            let attrs = entry.metadata().map(|m| m.file_attributes()).unwrap_or(0);
+            let is_real_dir = !crate::fsutil::attrs_are_reparse(attrs)
+                && entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
             if is_real_dir {
                 walk_clear(&path);
             }
         }
     }
-    if root.is_dir() {
+    if matches!(
+        crate::fsutil::path_kind_no_follow(root),
+        Ok(crate::fsutil::PathKind::Directory)
+    ) {
         walk_clear(root);
     }
 }
 
-/// Port of `scheduleDeleteOne`.
+/// Port of `scheduleDeleteOne`. Successful scheduling is recorded in
+/// `RunState.reboot_scheduled_paths` so the post-run check reports PENDING
+/// REBOOT only for verifiably successful MoveFileExW calls (REPORT-01).
 fn schedule_delete_one(p: &Path) -> bool {
     let ps = p.to_string_lossy().into_owned();
     let ext = extended_length_path(p);
@@ -142,57 +153,53 @@ fn schedule_delete_one(p: &Path) -> bool {
         &ps,
         "Pending delete at reboot",
     );
+    let key = crate::util::to_lower(&ps);
+    app::run_mut(|s| s.reboot_scheduled_paths.insert(key));
     true
 }
 
-fn collect_paths_recursive(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let is_real_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
-        if is_real_dir {
-            collect_paths_recursive(&path, out);
-        }
-        out.push(path);
-    }
-}
-
-/// Port of `scheduleDeleteTree`: children first, deepest paths first.
+/// Port of `scheduleDeleteTree`: children first via postorder traversal,
+/// abort-aware, never descending through reparse points and never
+/// materializing/sorting the whole tree up front (audit finding:
+/// traversal cost + FS-01 boundary).
 fn schedule_delete_tree(p: &Path) -> bool {
-    let mut all_ok = true;
-    if p.is_dir() {
-        let mut paths: Vec<PathBuf> = Vec::new();
-        collect_paths_recursive(p, &mut paths);
-        paths.sort_by_key(|b| std::cmp::Reverse(b.to_string_lossy().len()));
-        for child in &paths {
-            if !child.exists() {
-                continue; // vanished already
-            }
-            all_ok = schedule_delete_one(child) && all_ok;
+    crate::fsutil::for_each_postorder(p, &mut |path, _kind| {
+        if app::ABORT_REQUESTED.load(std::sync::atomic::Ordering::SeqCst) {
+            app::run_mut(|s| s.aborted = true);
+            return false; // stop traversal; caller records partial results
         }
-    }
-    if p.exists() {
-        all_ok = schedule_delete_one(p) && all_ok;
-    }
-    all_ok
+        schedule_delete_one(path); // failures are logged by schedule_delete_one
+        true
+    })
 }
 
 /// Counted recursive removal (std's remove_dir_all does not return a count;
-/// the legacy build logs `Removed entries=N`). Symlinks removed as files.
+/// the legacy build logs `Removed entries=N`). Reparse entries are removed
+/// AS ENTRIES (the link itself), their targets untouched (FS-01).
 fn remove_tree_counted(root: &Path) -> Result<u64, std::io::Error> {
     let meta = std::fs::symlink_metadata(root)?;
-    if meta.is_symlink() || !meta.is_dir() {
-        std::fs::remove_file(root)?;
-        return Ok(1);
+    if meta.file_attributes() & crate::fsutil::FILE_ATTRIBUTE_REPARSE_POINT != 0 || !meta.is_dir() {
+        // A junction/dir-symlink needs remove_dir semantics; file symlinks
+        // need remove_file. Try both, surface the first error if both fail.
+        match std::fs::remove_file(root) {
+            Ok(()) => return Ok(1),
+            Err(e) => {
+                std::fs::remove_dir(root).map_err(|_| e)?;
+                return Ok(1);
+            }
+        }
     }
     let mut count: u64 = 0;
     for entry in std::fs::read_dir(root)? {
         let entry = entry?;
         let child = entry.path();
+        let attrs = entry.metadata().map(|m| m.file_attributes()).unwrap_or(0);
+        let is_reparse = crate::fsutil::attrs_are_reparse(attrs);
         let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
-        if is_dir {
+        if is_reparse {
+            // Remove the reparse ENTRY itself; never its target.
+            count += remove_tree_counted(&child)?;
+        } else if is_dir {
             count += remove_tree_counted(&child)?;
         } else {
             std::fs::remove_file(&child)?;
@@ -238,10 +245,20 @@ fn unsafe_recursive_directory_decision(
 }
 
 /// Port of `unsafeRecursiveDirectoryTarget`: whole DriverStore package roots
-/// and non-allow-listed driver payload folders must never be removed recursively.
+/// and non-allow-listed driver payload folders must never be removed
+/// recursively. Kind probing is no-follow; an UNREADABLE stat or a reparse
+/// point fails closed (treated as an unsafe recursive target).
 fn unsafe_recursive_directory_target(p: &Path) -> bool {
+    let is_dir = matches!(
+        crate::fsutil::path_kind_no_follow(p),
+        Ok(crate::fsutil::PathKind::Directory)
+    );
+    let stat_failed_or_reparse = matches!(
+        crate::fsutil::path_kind_no_follow(p),
+        Err(_) | Ok(crate::fsutil::PathKind::Reparse)
+    );
     unsafe_recursive_directory_decision(
-        p.is_dir(),
+        is_dir || stat_failed_or_reparse,
         &crate::matching::path_wide_lower(p),
         &crate::util::to_lower(
             &p.parent()
@@ -268,6 +285,29 @@ pub fn delete_candidate(index: usize) {
         return;
     }
 
+    // No-follow tri-state existence probe (REPORT-02): genuine absence is
+    // SKIP, an inaccessible stat must NOT masquerade as "gone".
+    match crate::fsutil::path_kind_no_follow(&c.path) {
+        Ok(crate::fsutil::PathKind::Missing) => {
+            log_action(
+                "DeletePath",
+                "SKIP",
+                &c.component_key,
+                &path_str,
+                "Path no longer exists",
+            );
+            return;
+        }
+        Err(e) => log_action(
+            "DeletePath",
+            "WARN",
+            &c.component_key,
+            &path_str,
+            &format!("Existence unverifiable ({e}); attempting deletion anyway"),
+        ),
+        _ => {}
+    }
+
     if unsafe_recursive_directory_target(&c.path) {
         log_action(
             "DeletePath",
@@ -291,20 +331,18 @@ pub fn delete_candidate(index: usize) {
         return;
     }
 
-    if !c.path.exists() {
-        log_action(
-            "DeletePath",
-            "SKIP",
-            &c.component_key,
-            &path_str,
-            "Path no longer exists",
-        );
-        return;
-    }
-
     take_ownership_if_requested(&path_str);
 
-    let result: Result<(), String> = if c.is_directory {
+    // Dispatch by NO-FOLLOW kind: reparse entries are removed as entries
+    // (link itself), not descended into (FS-01).
+    let kind = crate::fsutil::path_kind_no_follow(&c.path).ok();
+    let treat_as_directory = match kind {
+        Some(crate::fsutil::PathKind::Directory) => true,
+        Some(crate::fsutil::PathKind::Missing | crate::fsutil::PathKind::File) => false,
+        _ => c.is_directory, // Reparse or unverifiable: legacy hint as fallback
+    };
+
+    let result: Result<(), String> = if treat_as_directory {
         let first = remove_tree_counted(&c.path);
         let final_res = match first {
             Ok(removed) => Ok(removed),

@@ -4,6 +4,7 @@
 //! `tallyPreviousLogs`, `writeCandidatesCsv`.
 
 use std::collections::HashSet;
+use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use crate::app;
@@ -24,7 +25,12 @@ fn add_env_root(roots: &mut Vec<PathBuf>, env: &str, suffix: &str) {
             return;
         }
         let p = PathBuf::from(&base).join(suffix);
-        if p.exists() {
+        // No-follow kind check: a junctioned "root" must not redirect the
+        // scan into some unrelated target tree (FS-01).
+        if matches!(
+            crate::fsutil::path_kind_no_follow(&p),
+            Ok(crate::fsutil::PathKind::Directory)
+        ) {
             roots.push(p);
         }
     }
@@ -100,7 +106,10 @@ pub fn get_existing_roots() -> Vec<PathBuf> {
                     .join("NVIDIA Corporation"),
             ];
             for p in user_roots {
-                if p.exists() {
+                if matches!(
+                    crate::fsutil::path_kind_no_follow(&p),
+                    Ok(crate::fsutil::PathKind::Directory)
+                ) {
                     roots.push(p);
                 }
             }
@@ -170,7 +179,12 @@ pub fn discover_candidates(enabled: &crate::app::EnabledMap) {
     let mut seen: HashSet<String> = HashSet::new();
 
     let mut process_path = |p: &Path| {
-        let is_dir = p.is_dir();
+        // No-follow kind so a junction surface is recorded as its own entry
+        // without claiming directory semantics of its TARGET.
+        let is_dir = matches!(
+            crate::fsutil::path_kind_no_follow(p),
+            Ok(crate::fsutil::PathKind::Directory)
+        );
         let Some(comp) = match_component_for_path(p, enabled) else {
             return;
         };
@@ -200,7 +214,10 @@ pub fn discover_candidates(enabled: &crate::app::EnabledMap) {
             break;
         }
         process_path(root);
-        if root.is_dir() {
+        if matches!(
+            crate::fsutil::path_kind_no_follow(root),
+            Ok(crate::fsutil::PathKind::Directory)
+        ) {
             walk(root, enabled, &mut process_path);
         }
     }
@@ -268,12 +285,16 @@ fn walk(dir: &Path, enabled: &crate::app::EnabledMap, visit: &mut dyn FnMut(&Pat
             return;
         }
         let path = entry.path();
-        if should_prune_traversal(&path, enabled) {
+        // Reparse entries are visited as candidate surfaces but NEVER
+        // descended into (FS-01 destructive boundary).
+        let attrs = entry.metadata().map(|m| m.file_attributes()).unwrap_or(0);
+        let is_reparse = crate::fsutil::attrs_are_reparse(attrs);
+        if !is_reparse && should_prune_traversal(&path, enabled) {
             continue;
         }
         visit(&path);
-        let is_real_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
-        if is_real_dir {
+        let descend = !is_reparse && entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        if descend {
             walk(&path, enabled, visit);
         }
     }

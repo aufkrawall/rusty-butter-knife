@@ -84,7 +84,9 @@ pub fn initialize_run_state() {
     } else {
         PathBuf::from(&log_dir_override)
     };
-    let run_id = now_stamp();
+    // Run IDs need sub-second uniqueness: same-second runs must not share a
+    // default log filename (audit finding on run-ID resolution).
+    let run_id = format!("{}-{}", now_stamp(), crate::util::now_unique_suffix());
     let log_path = if !log_file_override.is_empty() {
         PathBuf::from(log_file_override)
     } else {

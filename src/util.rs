@@ -259,6 +259,18 @@ pub fn atoi_prefix(s: &str) -> i64 {
 }
 
 /// CSV line parser honoring `""` quoting (port of `parseCsvLine`).
+/// Unique-ish suffix for run IDs, temp names, and log-file disambiguation.
+/// Combines PID with a process-lifetime atomic counter XORed by tick
+/// milliseconds so same-second runs never collide (audit finding: run IDs
+/// had only one-second resolution).
+pub fn now_unique_suffix() -> String {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let mixed = (crate::ffi::tick_count_64() as u32) ^ n;
+    format!("{:x}-{:x}", crate::ffi::current_process_id(), mixed)
+}
+
 pub fn parse_csv_line(line: &str) -> Vec<String> {
     let chars: Vec<char> = line.chars().collect();
     let mut fields: Vec<String> = Vec::new();

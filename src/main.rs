@@ -14,6 +14,7 @@ mod ffi;
 mod ffi_capture;
 mod ffi_services;
 mod ffi_tasksched;
+mod fsutil;
 mod logging;
 mod matching;
 mod menu;
