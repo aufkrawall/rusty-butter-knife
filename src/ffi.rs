@@ -491,14 +491,38 @@ pub struct RunAsChild {
 }
 
 impl RunAsChild {
-    /// Wait indefinitely, return the child's exit code.
-    pub fn wait_exit_code(&self) -> u32 {
-        let mut rc = 0u32;
-        unsafe {
-            WaitForSingleObject(self.process, 0xFFFF_FFFF);
-            GetExitCodeProcess(self.process, &mut rc);
+    /// Abort-aware wait for the elevated child's exit code. Polls in short
+    /// slices so a Ctrl+C request escapes the wait promptly instead of
+    /// blocking forever on a stuck elevation dialog or child (audit finding:
+    /// waits must be cancellation-aware). If the abort fires mid-wait, one
+    /// last 5 s grace is given for graceful shutdown before abandoning;
+    /// 0xFFFF_FFFD signals "abandoned".
+    pub fn wait_exit_code_aborting(&self, abort_requested: impl Fn() -> bool) -> u32 {
+        const WAIT_OBJECT_0: u32 = 0;
+        const STILL_ACTIVE: u32 = 259;
+        const ABANDONED: u32 = 0xFFFF_FFFD;
+        loop {
+            let mut rc = STILL_ACTIVE;
+            let signaled =
+                // SAFETY: owned child process handle from ShellExecuteExW.
+                unsafe { WaitForSingleObject(self.process, 250) } == WAIT_OBJECT_0;
+            if signaled {
+                // SAFETY: exited child of our own handle.
+                unsafe { GetExitCodeProcess(self.process, &mut rc) };
+                return rc;
+            }
+            if abort_requested() {
+                // Short final grace for graceful shutdown.
+                let mut late_rc = STILL_ACTIVE;
+                unsafe { WaitForSingleObject(self.process, 5000) };
+                // SAFETY: read the resulting code regardless of liveness.
+                unsafe { GetExitCodeProcess(self.process, &mut late_rc) };
+                if late_rc != STILL_ACTIVE {
+                    return late_rc;
+                }
+                return ABANDONED;
+            }
         }
-        rc
     }
 }
 

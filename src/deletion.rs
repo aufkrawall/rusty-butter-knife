@@ -32,10 +32,24 @@ fn take_ownership_if_requested(target: &str) {
         }
     };
     // '/D' expects a locale-specific letter for "Yes" (German wants J,
-    // French O, ...). Try the common variants until one is accepted.
+    // French O, ...). Try variants until accepted. To avoid N full 120 s
+    // round-trips per candidate (audit finding: ownership retries), the
+    // winning letter index is memoized process-wide so later candidates go
+    // straight there. Native SID/security APIs remain deferred debt.
     const YES_LETTERS: &[&str] = &["Y", "J", "O", "S"];
+    static WINNING_LETTER: std::sync::OnceLock<std::sync::atomic::AtomicUsize> =
+        std::sync::OnceLock::new();
+    let winning = WINNING_LETTER.get_or_init(std::sync::atomic::AtomicUsize::default);
+    let mut order: Vec<usize> = (0..YES_LETTERS.len()).collect();
+    let start_idx = winning.load(std::sync::atomic::Ordering::Relaxed);
+    let rotate = start_idx.min(order.len() - 1);
+    order.rotate_left(rotate);
+
     let mut takeown_ok = false;
-    for letter in YES_LETTERS {
+    for idx in order {
+        if app::ABORT_REQUESTED.load(std::sync::atomic::Ordering::SeqCst) {
+            break;
+        }
         if crate::procs::run_shell_command(
             &crate::util::join_command(&[
                 takeown_exe.clone(),
@@ -44,12 +58,13 @@ fn take_ownership_if_requested(target: &str) {
                 "/A".into(),
                 "/R".into(),
                 "/D".into(),
-                (*letter).into(),
+                YES_LETTERS[idx].into(),
             ]),
             "takeown",
             true,
         ) {
             takeown_ok = true;
+            winning.store(idx, std::sync::atomic::Ordering::Relaxed);
             break;
         }
         if !execute {
@@ -70,7 +85,7 @@ fn take_ownership_if_requested(target: &str) {
         "icacls",
         true,
     );
-    if execute && !takeown_ok {
+    if execute && !takeown_ok && !app::ABORT_REQUESTED.load(std::sync::atomic::Ordering::SeqCst) {
         log_line(
             "WARN",
             "takeown did not report success; the '/D' yes-letter may differ on this locale.",

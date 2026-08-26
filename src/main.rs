@@ -331,7 +331,19 @@ fn relaunch_elevated_for_wizard() -> Option<i32> {
 
     let exe_path = sysinfo::get_exe_path().to_string_lossy().into_owned();
     let child = ffi::shellexecute_runas(&exe_path, &joined)?;
-    Some(child.wait_exit_code() as i32)
+    let res = child
+        .wait_exit_code_aborting(|| app::ABORT_REQUESTED.load(std::sync::atomic::Ordering::SeqCst));
+    if res == 0xFFFF_FFFD {
+        // Abandoned because of Ctrl+C: record the abort so the run exits
+        // through the documented aborted path instead of a fake success.
+        log_line(
+            "WARN",
+            "Abandoned wait for elevated instance after abort request.",
+        );
+        app::run_mut(|s| s.aborted = true);
+        return Some(app::EXIT_ABORTED);
+    }
+    Some(res as i32)
 }
 
 /// Pause helper mirroring the tail of wmain.
