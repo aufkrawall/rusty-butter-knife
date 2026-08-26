@@ -7,8 +7,7 @@
 #![allow(unsafe_code)]
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, GetLastError, LocalFree, SetHandleInformation, ERROR_ALREADY_EXISTS, HANDLE,
-    HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
+    CloseHandle, GetLastError, LocalFree, ERROR_ALREADY_EXISTS, HANDLE, INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Globalization::{GetOEMCP, MultiByteToWideChar};
 use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
@@ -17,7 +16,7 @@ use windows_sys::Win32::Security::{
     LookupAccountSidW, TokenUser, PSID, SID_IDENTIFIER_AUTHORITY, TOKEN_QUERY,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    DeleteFileW, MoveFileExW, ReadFile, SetFileAttributesW, FILE_ATTRIBUTE_NORMAL,
+    DeleteFileW, MoveFileExW, SetFileAttributesW, FILE_ATTRIBUTE_NORMAL,
     MOVEFILE_DELAY_UNTIL_REBOOT, SYNCHRONIZE,
 };
 use windows_sys::Win32::System::Console::{
@@ -33,15 +32,12 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     MODULEENTRY32W, PROCESSENTRY32W, TH32CS_SNAPMODULE, TH32CS_SNAPMODULE32, TH32CS_SNAPPROCESS,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleFileNameW;
-use windows_sys::Win32::System::Pipes::{CreatePipe, PeekNamedPipe};
 use windows_sys::Win32::System::SystemInformation::{
     GetLocalTime, GetSystemDirectoryW, GetTickCount64,
 };
 use windows_sys::Win32::System::Threading::{
-    CreateMutexW, CreateProcessW, GetCurrentProcess, GetCurrentProcessId, GetExitCodeProcess,
-    OpenProcess, OpenProcessToken, TerminateProcess, WaitForSingleObject, CREATE_NO_WINDOW,
-    PROCESS_INFORMATION, PROCESS_TERMINATE, STARTF_USESHOWWINDOW, STARTF_USESTDHANDLES,
-    STARTUPINFOW,
+    CreateMutexW, GetCurrentProcess, GetCurrentProcessId, GetExitCodeProcess, OpenProcess,
+    OpenProcessToken, TerminateProcess, WaitForSingleObject, PROCESS_TERMINATE,
 };
 use windows_sys::Win32::UI::Shell::{
     ShellExecuteExW, SEE_MASK_FLAG_DDEWAIT, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS,
@@ -76,6 +72,7 @@ pub fn local_time_parts() -> (u16, u16, u16, u16, u16, u16) {
 }
 
 /// Milliseconds since boot (port of GetTickCount64 usage).
+#[allow(dead_code)]
 pub fn tick_count_64() -> u64 {
     unsafe { GetTickCount64() }
 }
@@ -483,159 +480,6 @@ impl Drop for TerminateHandle {
             unsafe { CloseHandle(self.0) };
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// Child process capture (port of runProcessCapture)
-// ---------------------------------------------------------------------------
-
-pub struct CaptureResult {
-    pub exit_code: u32,
-    pub output: String,
-    pub started: bool,
-}
-
-/// Capture stdout+stderr of `command_line` with the polling/timeout protocol
-/// identical to the legacy implementation (50 ms wait slices, hard terminate
-/// with 0xFFFF0001 on timeout). `decode` converts raw pipe bytes to text.
-pub fn capture_process(
-    command_line: &str,
-    timeout_ms: u32,
-    decode: impl Fn(&[u8]) -> String,
-) -> CaptureResult {
-    let mut result = CaptureResult {
-        exit_code: 0xFFFF_FFFF,
-        output: String::new(),
-        started: false,
-    };
-
-    let sa = windows_sys::Win32::Security::SECURITY_ATTRIBUTES {
-        nLength: std::mem::size_of::<windows_sys::Win32::Security::SECURITY_ATTRIBUTES>() as u32,
-        lpSecurityDescriptor: std::ptr::null_mut(),
-        bInheritHandle: 1,
-    };
-    let mut read_pipe: HANDLE = std::ptr::null_mut();
-    let mut write_pipe: HANDLE = std::ptr::null_mut();
-    // SAFETY: both pipe ends come back owned; write end closed right after
-    // CreateProcessW, read end on every return path below.
-    if unsafe { CreatePipe(&mut read_pipe, &mut write_pipe, &sa, 0) } == 0 {
-        result.output = format!(
-            "CreatePipe failed: {}",
-            format_message(last_error()).unwrap_or_default()
-        );
-        return result;
-    }
-    unsafe { SetHandleInformation(read_pipe, HANDLE_FLAG_INHERIT, 0) };
-
-    let mut si: STARTUPINFOW = unsafe { std::mem::zeroed() };
-    si.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
-    si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
-    si.hStdOutput = write_pipe;
-    si.hStdError = write_pipe;
-    si.wShowWindow = 0; // SW_HIDE
-    let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
-
-    // CreateProcessW may write into the command line buffer.
-    let mut cmd_w = wide(command_line);
-    let ok = unsafe {
-        CreateProcessW(
-            std::ptr::null(),
-            cmd_w.as_mut_ptr(),
-            std::ptr::null(),
-            std::ptr::null(),
-            1,
-            CREATE_NO_WINDOW,
-            std::ptr::null(),
-            std::ptr::null(),
-            &si,
-            &mut pi,
-        )
-    };
-    unsafe { CloseHandle(write_pipe) };
-    if ok == 0 {
-        result.output = format!(
-            "CreateProcess failed: {} Command={command_line}",
-            format_message(last_error()).unwrap_or_default()
-        );
-        unsafe { CloseHandle(read_pipe) };
-        return result;
-    }
-
-    result.started = true;
-    let mut bytes: Vec<u8> = Vec::new();
-    let mut buffer = [0u8; 4096];
-    let start = tick_count_64();
-
-    loop {
-        loop {
-            let mut avail = 0u32;
-            let peek_ok = unsafe {
-                PeekNamedPipe(
-                    read_pipe,
-                    std::ptr::null_mut(),
-                    0,
-                    std::ptr::null_mut(),
-                    &mut avail,
-                    std::ptr::null_mut(),
-                )
-            } != 0;
-            if !peek_ok || avail == 0 {
-                break;
-            }
-            let to_read = avail.min(buffer.len() as u32);
-            let mut got = 0u32;
-            let rd_ok = unsafe {
-                ReadFile(
-                    read_pipe,
-                    buffer.as_mut_ptr().cast(),
-                    to_read,
-                    &mut got,
-                    std::ptr::null_mut(),
-                )
-            } != 0;
-            if rd_ok && got > 0 {
-                bytes.extend_from_slice(&buffer[..got as usize]);
-            } else {
-                break;
-            }
-        }
-
-        const WAIT_OBJECT_0: u32 = 0;
-        if unsafe { WaitForSingleObject(pi.hProcess, 50) } == WAIT_OBJECT_0 {
-            break;
-        }
-        if tick_count_64().saturating_sub(start) > u64::from(timeout_ms) {
-            unsafe { TerminateProcess(pi.hProcess, 0xFFFF_0001) };
-            result.output.push_str("Timed out. ");
-            break;
-        }
-    }
-
-    loop {
-        let mut got = 0u32;
-        let rd_ok = unsafe {
-            ReadFile(
-                read_pipe,
-                buffer.as_mut_ptr().cast(),
-                buffer.len() as u32,
-                &mut got,
-                std::ptr::null_mut(),
-            )
-        } != 0;
-        if !rd_ok || got == 0 {
-            break;
-        }
-        bytes.extend_from_slice(&buffer[..got as usize]);
-    }
-
-    unsafe {
-        GetExitCodeProcess(pi.hProcess, &mut result.exit_code);
-        CloseHandle(pi.hThread);
-        CloseHandle(pi.hProcess);
-        CloseHandle(read_pipe);
-    }
-    result.output.push_str(&decode(&bytes));
-    result
 }
 
 // ---------------------------------------------------------------------------
