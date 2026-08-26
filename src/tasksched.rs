@@ -113,6 +113,53 @@ pub fn effective_child_switches() -> Vec<String> {
     out
 }
 
+/// Pure decision core of the TI-wait poll loop so the scheduler-state
+/// machine is unit-testable (audit finding HANG-02). Polling may observe a
+/// task that already finished between two polls ONLY through LastTaskResult;
+/// holding back that check until the full start-grace would waste ~60 s on
+/// every fast child.
+#[derive(Debug, PartialEq, Eq)]
+pub enum PollDecision {
+    /// Stay in the wait loop.
+    KeepWaiting,
+    /// Task left Running/Queued and carries a real exit code.
+    Finished(i64),
+    /// Grace elapsed without the task ever starting (HAS_NOT_RUN/unreadable).
+    NeverStarted,
+}
+
+pub const SCHED_S_TASK_HAS_NOT_RUN: i64 = 0x41303;
+
+pub fn ti_poll_decision(
+    saw_running_before: bool,
+    state_running: bool,
+    state_queued: bool,
+    last_result: Option<i64>,
+    waited_secs: i64,
+    start_grace_secs: i64,
+) -> PollDecision {
+    let _ = saw_running_before;
+    if state_running {
+        return PollDecision::KeepWaiting;
+    }
+    if state_queued {
+        return PollDecision::KeepWaiting;
+    }
+    // Not Running/Queued anymore: consult LastTaskResult IMMEDIATELY.
+    match last_result {
+        Some(code) if code != SCHED_S_TASK_HAS_NOT_RUN => PollDecision::Finished(code),
+        _ => {
+            if waited_secs >= start_grace_secs {
+                PollDecision::NeverStarted
+            } else {
+                // HAS_NOT_RUN within the grace window: keep waiting for the
+                // scheduler to launch it.
+                PollDecision::KeepWaiting
+            }
+        }
+    }
+}
+
 /// Port of `attemptTrustedInstallerRelaunch`. The wait loop polls the task
 /// state via COM; the exit code comes from LastTaskResult. No handshake file
 /// is used, so a run leaves no temporary artifacts.
@@ -210,23 +257,31 @@ pub fn attempt_trusted_installer_relaunch() -> TiRelaunchResult {
     let mut timed_out = true;
 
     while waited < opts.ti_wait_seconds {
-        match registered.poll_state() {
-            Some(TiState::Running) => saw_running = true,
-            Some(state) if saw_running && state != TiState::Queued => {
-                // Task finished. LastTaskResult holds the child's exit code.
+        let polled = registered.poll_state();
+        let (state_running, state_queued) = match polled {
+            Some(TiState::Running) => {
+                saw_running = true;
+                (true, false)
+            }
+            Some(TiState::Queued) => (false, true),
+            _ => (false, false),
+        };
+        let last = registered.last_result();
+
+        match ti_poll_decision(
+            saw_running,
+            state_running,
+            state_queued,
+            last,
+            waited,
+            start_grace,
+        ) {
+            PollDecision::KeepWaiting => {}
+            PollDecision::Finished(exit_code) => {
                 res.child_status_seen = true;
-                match registered.last_result() {
-                    Some(last) => {
-                        res.detail = format!("TI child finished: exit=0x{last:X}");
-                        res.child_exit_code = last;
-                        res.child_succeeded = last == 0;
-                    }
-                    None => {
-                        res.child_exit_code = -1;
-                        res.child_succeeded = false;
-                        res.detail = "TI child finished: LastTaskResult unreadable".to_string();
-                    }
-                }
+                res.child_exit_code = exit_code;
+                res.child_succeeded = exit_code == 0;
+                res.detail = format!("TI child finished: exit=0x{exit_code:X}");
                 log_line(
                     if res.child_succeeded { "INFO" } else { "ERROR" },
                     &res.detail,
@@ -234,39 +289,17 @@ pub fn attempt_trusted_installer_relaunch() -> TiRelaunchResult {
                 timed_out = false;
                 break;
             }
-            Some(_) => {}
-            None => {}
-        }
-
-        if !saw_running && waited >= start_grace {
-            // The child may have run and exited entirely between two polls.
-            // In that case LastTaskResult holds its real exit code, while
-            // SCHED_S_TASK_HAS_NOT_RUN (0x41303) means the scheduler never
-            // launched it at all (e.g. S4U principal refusal).
-            const SCHED_S_TASK_HAS_NOT_RUN: i64 = 0x41303;
-            match registered.last_result() {
-                Some(last) if last != SCHED_S_TASK_HAS_NOT_RUN => {
-                    res.child_status_seen = true;
-                    res.child_exit_code = last;
-                    res.child_succeeded = last == 0;
-                    res.detail = format!("TI child finished: exit=0x{last:X}");
-                    log_line(
-                        if res.child_succeeded { "INFO" } else { "ERROR" },
-                        &res.detail,
-                    );
-                }
-                _ => {
-                    log_line(
-                        "ERROR",
-                        &format!(
-                            "TI task did not enter Running state within {start_grace}s. Task Scheduler may have refused the S4U/TrustedInstaller principal."
-                        ),
-                    );
-                    res.detail = "task never started".to_string();
-                }
+            PollDecision::NeverStarted => {
+                log_line(
+                    "ERROR",
+                    &format!(
+                        "TI task did not enter Running state within {start_grace}s. Task Scheduler may have refused the S4U/TrustedInstaller principal."
+                    ),
+                );
+                res.detail = "task never started".to_string();
+                timed_out = false;
+                break;
             }
-            timed_out = false;
-            break;
         }
 
         if waited > 0 && waited % 15 == 0 {
@@ -296,4 +329,58 @@ pub fn attempt_trusted_installer_relaunch() -> TiRelaunchResult {
 
 fn ffi_task_id() -> u32 {
     crate::ffi::current_process_id()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fast_completion_between_polls_finishes_immediately() {
+        // HANG-02: child started and exited between two polls must be
+        // recognized at once via LastTaskResult, well BEFORE the 60 s grace.
+        assert_eq!(
+            ti_poll_decision(false, false, false, Some(0), 3, 60),
+            PollDecision::Finished(0)
+        );
+        assert_eq!(
+            ti_poll_decision(false, false, false, Some(11), 3, 60),
+            PollDecision::Finished(11)
+        );
+    }
+
+    #[test]
+    fn has_not_run_keeps_waiting_until_grace_expires() {
+        assert_eq!(
+            ti_poll_decision(false, false, false, Some(SCHED_S_TASK_HAS_NOT_RUN), 3, 60),
+            PollDecision::KeepWaiting,
+            "scheduler simply has not launched yet"
+        );
+        // Unreadable result behaves like HAS_NOT_RUN inside the grace.
+        assert_eq!(
+            ti_poll_decision(false, false, false, None, 59, 60),
+            PollDecision::KeepWaiting
+        );
+        // ...but past the grace it becomes the never-started diagnosis.
+        assert_eq!(
+            ti_poll_decision(false, false, false, Some(SCHED_S_TASK_HAS_NOT_RUN), 60, 60),
+            PollDecision::NeverStarted
+        );
+        assert_eq!(
+            ti_poll_decision(false, false, false, None, 63, 60),
+            PollDecision::NeverStarted
+        );
+    }
+
+    #[test]
+    fn running_and_queued_states_keep_waiting() {
+        assert_eq!(
+            ti_poll_decision(true, true, false, Some(0xC1), 120, 60),
+            PollDecision::KeepWaiting
+        );
+        assert_eq!(
+            ti_poll_decision(false, false, true, None, 10, 60),
+            PollDecision::KeepWaiting
+        );
+    }
 }
