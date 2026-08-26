@@ -16,8 +16,20 @@ fn take_ownership_if_requested(target: &str) {
     if !take_ownership {
         return;
     }
-    let takeown_exe = crate::sysinfo::system_dir_file("takeown.exe");
-    let icacls_exe = crate::sysinfo::system_dir_file("icacls.exe");
+    let takeown_exe = match crate::sysinfo::system_dir_file("takeown.exe") {
+        Ok(p) => p,
+        Err(e) => {
+            log_line("ERROR", &format!("Ownership step skipped: {e}"));
+            return;
+        }
+    };
+    let icacls_exe = match crate::sysinfo::system_dir_file("icacls.exe") {
+        Ok(p) => p,
+        Err(e) => {
+            log_line("ERROR", &format!("ACL grant step skipped: {e}"));
+            return;
+        }
+    };
     // '/D' expects a locale-specific letter for "Yes" (German wants J,
     // French O, ...). Try the common variants until one is accepted.
     const YES_LETTERS: &[&str] = &["Y", "J", "O", "S"];

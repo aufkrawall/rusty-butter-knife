@@ -81,7 +81,7 @@ impl Default for Options {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Component {
     pub key: String,
     pub display_name: String,

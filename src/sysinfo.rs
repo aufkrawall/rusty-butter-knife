@@ -21,14 +21,18 @@ fn ffi_is_admin() -> bool {
 /// Absolute path inside the real System32 directory. Invoking system tools by
 /// bare name lets CreateProcess pick up a planted binary from the application
 /// directory or CWD first — catastrophic in a SYSTEM-context TI child.
-pub fn system_dir_file(file_name: &str) -> String {
+/// Fail closed (audit finding SEC-01): if GetSystemDirectoryW fails, the
+/// caller must NOT fall back to PATH/CWD resolution; it skips the operation.
+pub fn system_dir_file(file_name: &str) -> Result<String, String> {
     let Some(dir) = crate::ffi::system_directory() else {
-        return file_name.to_string();
+        return Err(format!(
+            "GetSystemDirectoryW failed; refusing to resolve '{file_name}' via PATH/CWD"
+        ));
     };
-    Path::new(&dir)
+    Ok(Path::new(&dir)
         .join(file_name)
         .to_string_lossy()
-        .into_owned()
+        .into_owned())
 }
 
 /// Port of `currentTokenAccount`: "DOMAIN\\name" or SID string fallback.

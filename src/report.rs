@@ -369,8 +369,8 @@ pub fn run_cleanup() -> Result<(), String> {
     let enabled_snapshot = app::enabled_snapshot();
 
     handle_services(&enabled_snapshot);
-    kill_locker_processes();
-    handle_scheduled_tasks();
+    kill_locker_processes(&enabled_snapshot);
+    handle_scheduled_tasks(&enabled_snapshot);
     tally_previous_logs();
     inspect_nv_container_modules(false);
     discover_candidates(&enabled_snapshot);

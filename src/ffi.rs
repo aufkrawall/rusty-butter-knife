@@ -569,7 +569,9 @@ pub fn current_last_error() -> Win32Error {
 
 // Service-control bindings live in the sibling module (same unsafe
 // boundary policy). Re-exported here for ergonomic `ffi::` paths.
-pub use crate::ffi_services::{enumerate_win32_services, open_service_control_manager};
+pub use crate::ffi_services::{
+    enumerate_win32_services, open_service_control_manager, StopOutcome,
+};
 
 // COM Task Scheduler bindings live in the sibling module (same unsafe
 // boundary policy). Re-exported here for ergonomic  paths.

@@ -7,12 +7,12 @@ use crate::app;
 use crate::ffi;
 use crate::logging::{add_action, log_action, log_line};
 use crate::matching::{
-    is_bloat_process_name, is_nvidia_context_string, is_preserved_container_name,
-    module_is_telemetry_or_updater,
+    is_preserved_container_name, module_is_telemetry_or_updater, process_action_decision,
+    service_action_decision, task_action_decision, ActionDecision,
 };
 use crate::procs::run_process_capture;
 use crate::sysinfo::system_dir_file;
-use crate::util::{contains_no_case, join_command, parse_csv_line, to_lower, trim};
+use crate::util::{join_command, parse_csv_line, trim};
 use crate::winfmt::format_win_error;
 
 /// Port of `inspectNvContainerModules` (runs twice per cleanup; dedup sets
@@ -114,8 +114,12 @@ pub fn inspect_nv_container_modules(post_delete_phase: bool) {
     }
 }
 
-/// Port of `killLockerProcesses`.
-pub fn kill_locker_processes() {
+/// Port of `killLockerProcesses`. Every candidate is classified against the
+/// component selection first (SAFETY-01): a deselected component prevents its
+/// processes from being terminated. Terminations happen in one batch followed
+/// by a single shared ~3 s convergence deadline instead of up to 3 s per
+/// process (audit finding: serial per-process waits amplify cleanup time).
+pub fn kill_locker_processes(enabled: &crate::app::EnabledMap) {
     let (kill_lockers, execute, preserve_containers) =
         app::opts(|o| (o.kill_lockers, o.execute, o.preserve_nv_containers));
     if !kill_lockers {
@@ -136,93 +140,109 @@ pub fn kill_locker_processes() {
         }
     };
 
+    struct Target {
+        handle: Option<ffi::TerminateHandle>,
+        exe_name: String,
+        component_key: String,
+    }
+    let mut targets: Vec<Target> = Vec::new();
+
     for proc in processes {
-        let is_container = is_preserved_container_name(&proc.exe_name);
-        if is_container && preserve_containers {
-            continue;
-        }
-        if !is_bloat_process_name(&proc.exe_name) {
-            continue;
-        }
+        let component = match process_action_decision(&proc.exe_name, enabled, preserve_containers)
+        {
+            ActionDecision::Allowed(c) => c,
+            ActionDecision::ComponentDisabled(c) => {
+                log_action(
+                    "KillProcess",
+                    "SKIP",
+                    &c.key,
+                    &proc.exe_name,
+                    &format!("PID={} component deselected", proc.pid),
+                );
+                continue;
+            }
+            ActionDecision::NotMatched => continue, // unclassified: fail closed
+        };
         if !execute {
             log_action(
                 "KillProcess",
                 "DRYRUN",
-                "Process",
+                &component.key,
                 &proc.exe_name,
                 &format!("PID={}", proc.pid),
             );
             continue;
         }
-        let Some(handle) = ffi::TerminateHandle::open(proc.pid) else {
-            log_action(
-                "KillProcess",
-                "WARN",
-                "Process",
-                &proc.exe_name,
-                &format!(
-                    "OpenProcess failed: {}",
-                    format_win_error(ffi::TerminateHandle::last_error())
-                ),
-            );
-            continue;
-        };
-        let ok = handle.terminate(0);
-        let detail = if ok {
-            // File handles are released asynchronously; wait briefly so
-            // immediate deletions are not defeated by dying lockers.
-            if handle.wait_ms(3000) {
-                "Terminated".to_string()
-            } else {
-                "Terminate requested (still exiting)".to_string()
+        let handle = match ffi::TerminateHandle::open(proc.pid) {
+            Some(h) => Some(h),
+            None => {
+                log_action(
+                    "KillProcess",
+                    "WARN",
+                    &component.key,
+                    &proc.exe_name,
+                    &format!(
+                        "PID={} OpenProcess failed: {}",
+                        proc.pid,
+                        format_win_error(ffi::TerminateHandle::last_error())
+                    ),
+                );
+                None
             }
-        } else {
-            format_win_error(ffi::TerminateHandle::last_error())
         };
+        targets.push(Target {
+            handle,
+            exe_name: proc.exe_name.clone(),
+            component_key: component.key.clone(),
+        });
+    }
+
+    if !execute {
+        return;
+    }
+
+    // Phase A: request termination for every selected target...
+    for t in &targets {
+        let Some(handle) = &t.handle else { continue };
+        let ok = handle.terminate(0);
         log_action(
             "KillProcess",
             if ok { "INFO" } else { "WARN" },
-            "Process",
-            &proc.exe_name,
-            &detail,
+            &t.component_key,
+            &t.exe_name,
+            &if ok {
+                "Terminate requested".to_string()
+            } else {
+                format_win_error(ffi::TerminateHandle::last_error())
+            },
         );
     }
+    // Phase B: ...then ONE shared convergence deadline for the whole batch
+    // (file handles are released asynchronously when lockers die).
+    const CONVERGENCE_MS: u32 = 3000;
+    let start = std::time::Instant::now();
+    for t in &targets {
+        let Some(handle) = &t.handle else { continue };
+        let elapsed = start.elapsed().as_millis() as u32;
+        if elapsed >= CONVERGENCE_MS {
+            break;
+        }
+        if !handle.wait_ms(CONVERGENCE_MS - elapsed) {
+            log_action(
+                "KillProcess",
+                "WARN",
+                &t.component_key,
+                &t.exe_name,
+                "Still exiting after shared convergence window",
+            );
+        }
+    }
 }
 
-/// Port of `serviceMatchesBloat`.
-fn service_matches_bloat(
-    service_name: &str,
-    display_name: &str,
-    enabled: &crate::app::EnabledMap,
-) -> bool {
-    let combined = format!("{service_name} {display_name}");
-    if app::opts(|o| o.preserve_nv_containers) && is_preserved_container_name(&combined) {
-        return false;
-    }
-    if !is_nvidia_context_string(&combined) {
-        return false;
-    }
-    const TERMS: &[&str] = &[
-        "telemetry",
-        "displaydriverras",
-        "update",
-        "profileupdater",
-        "frameview",
-        "nvstream",
-        "shadowplay",
-        "share",
-        "ansel",
-        "nvidia app",
-        "geforce experience",
-        "broadcast",
-    ];
-    if TERMS.iter().any(|t| contains_no_case(&combined, t)) {
-        return true;
-    }
-    enabled.get("VirtualAudio").copied().unwrap_or(false) && contains_no_case(&combined, "nvvad")
-}
-
-/// Port of `handleServices`.
+/// Port of `handleServices`. Every matched service is classified against the
+/// component selection first (SAFETY-01); unknown-classification targets fail
+/// closed (never mutated). A requested stop is awaited within a bounded
+/// convergence window so subsequent stages do not race an exiting service.
 pub fn handle_services(enabled: &crate::app::EnabledMap) {
     let opts = app::opts(|o| {
         (
@@ -262,34 +282,49 @@ pub fn handle_services(enabled: &crate::app::EnabledMap) {
     };
 
     for svc in services {
-        if !service_matches_bloat(&svc.name, &svc.display, enabled) {
-            continue;
-        }
+        let preserve = app::opts(|o| o.preserve_nv_containers);
+        let component = match service_action_decision(&svc.name, &svc.display, enabled, preserve) {
+            ActionDecision::Allowed(c) => c,
+            ActionDecision::ComponentDisabled(c) => {
+                log_action(
+                    "Service",
+                    "SKIP",
+                    &c.key,
+                    &format!("{} ({})", svc.name, svc.display),
+                    "component deselected",
+                );
+                continue;
+            }
+            ActionDecision::NotMatched => continue, // unclassified: fail closed
+        };
         let full = format!("{} ({})", svc.name, svc.display);
         if !execute {
             if kill_lockers {
-                log_action("StopService", "DRYRUN", "Service", &full, "");
+                log_action("StopService", "DRYRUN", &component.key, &full, "");
             }
             if disable_services {
-                log_action("DisableService", "DRYRUN", "Service", &full, "");
+                log_action("DisableService", "DRYRUN", &component.key, &full, "");
             }
             if delete_services {
-                log_action("DeleteService", "DRYRUN", "Service", &full, "");
+                log_action("DeleteService", "DRYRUN", &component.key, &full, "");
             }
             continue;
         }
 
+        // Least privilege (SERVICE-01): request only the rights the selected
+        // operations actually exercise.
         let handle = match scm.open_service_for_ops(
             &svc.name,
             kill_lockers,
-            disable_services || delete_services,
+            disable_services,
+            delete_services,
         ) {
             Ok(h) => h,
             Err(e) => {
                 log_action(
                     "Service",
                     "WARN",
-                    "Service",
+                    &component.key,
                     &full,
                     &format!("OpenService failed: {}", format_win_error(e)),
                 );
@@ -298,20 +333,41 @@ pub fn handle_services(enabled: &crate::app::EnabledMap) {
         };
 
         if kill_lockers {
-            let res = handle.stop();
-            let ok = res.is_ok();
-            let err_ok_not_active = res.as_ref().err().map(|e| *e == 1062).unwrap_or(false);
-            let status = if ok || err_ok_not_active {
-                "INFO"
-            } else {
-                "WARN"
-            };
-            let detail = if ok {
-                "Stop requested".to_string()
-            } else {
-                format_win_error(res.err().unwrap())
-            };
-            log_action("StopService", status, "Service", &full, &detail);
+            const ERROR_SERVICE_NOT_ACTIVE: u32 = 1062;
+            match handle.stop() {
+                Ok(outcome) => {
+                    let detail = match outcome {
+                        ffi::StopOutcome::Stopped => "Stopped".to_string(),
+                        ffi::StopOutcome::AlreadyStopped => "Already stopped".to_string(),
+                        ffi::StopOutcome::StopPendingTimeout => {
+                            format!("Still stopping after {SERVICE_STOP_WAIT_MS} ms; continuing")
+                        }
+                        ffi::StopOutcome::QueryFailed(e) => {
+                            format!(
+                                "Stop requested; status query failed: {}",
+                                format_win_error(e)
+                            )
+                        }
+                    };
+                    let level = match outcome {
+                        ffi::StopOutcome::Stopped | ffi::StopOutcome::AlreadyStopped => "INFO",
+                        _ => "WARN",
+                    };
+                    log_action("StopService", level, &component.key, &full, &detail);
+                }
+                Err(ERROR_SERVICE_NOT_ACTIVE) => {
+                    log_action("StopService", "INFO", &component.key, &full, "Not running");
+                }
+                Err(e) => {
+                    log_action(
+                        "StopService",
+                        "WARN",
+                        &component.key,
+                        &full,
+                        &format_win_error(e),
+                    );
+                }
+            }
         }
 
         if disable_services {
@@ -319,7 +375,7 @@ pub fn handle_services(enabled: &crate::app::EnabledMap) {
             log_action(
                 "DisableService",
                 if res.is_ok() { "INFO" } else { "WARN" },
-                "Service",
+                &component.key,
                 &full,
                 &if res.is_ok() {
                     "Disabled".to_string()
@@ -334,7 +390,7 @@ pub fn handle_services(enabled: &crate::app::EnabledMap) {
             log_action(
                 "DeleteService",
                 if res.is_ok() { "INFO" } else { "WARN" },
-                "Service",
+                &component.key,
                 &full,
                 &if res.is_ok() {
                     "Deleted".to_string()
@@ -346,30 +402,14 @@ pub fn handle_services(enabled: &crate::app::EnabledMap) {
     }
 }
 
-/// Port of `taskMatchesBloat`. Token-aware context check: a bare 'nv'
-/// substring would also hit unrelated names such as '\Inventory\...' tasks.
-fn task_matches_bloat(task_name: &str) -> bool {
-    if !is_nvidia_context_string(task_name) {
-        return false;
-    }
-    const TERMS: &[&str] = &[
-        "telemetry",
-        "update",
-        "profile",
-        "frameview",
-        "shadowplay",
-        "share",
-        "nvstream",
-        "geforce",
-        "nvidia app",
-        "displaydriverras",
-    ];
-    let l = to_lower(task_name);
-    TERMS.iter().any(|t| l.contains(t))
-}
+/// Bounded convergence for SERVICE_CONTROL_STOP (audit finding SERVICE-02):
+/// a service may still be exiting while later stages try to remove its files.
+const SERVICE_STOP_WAIT_MS: u32 = 10_000;
 
 /// Port of `handleScheduledTasks` (schtasks.exe by absolute System32 path).
-pub fn handle_scheduled_tasks() {
+/// Every matched task is classified against the component selection first
+/// (SAFETY-01); unknown-classification tasks fail closed (never mutated).
+pub fn handle_scheduled_tasks(enabled: &crate::app::EnabledMap) {
     let (disable_tasks, delete_tasks, execute) = app::opts(|o| {
         (
             o.disable_scheduled_tasks,
@@ -383,7 +423,13 @@ pub fn handle_scheduled_tasks() {
         return;
     }
 
-    let schtasks = system_dir_file("schtasks.exe");
+    let schtasks = match system_dir_file("schtasks.exe") {
+        Ok(p) => p,
+        Err(e) => {
+            log_line("ERROR", &format!("Scheduled task handling skipped: {e}"));
+            return;
+        }
+    };
     let res = run_process_capture(
         &join_command(&[
             schtasks.clone(),
@@ -423,13 +469,24 @@ pub fn handle_scheduled_tasks() {
         if task_name.is_empty() {
             task_name = fields[0].clone();
         }
-        if !task_matches_bloat(&task_name) {
-            continue;
-        }
+        let component = match task_action_decision(&task_name, enabled) {
+            ActionDecision::Allowed(c) => c,
+            ActionDecision::ComponentDisabled(c) => {
+                log_action(
+                    "ScheduledTask",
+                    "SKIP",
+                    &c.key,
+                    &task_name,
+                    "component deselected",
+                );
+                continue;
+            }
+            ActionDecision::NotMatched => continue, // unclassified: fail closed
+        };
 
         if delete_tasks {
             if !execute {
-                log_action("DeleteTask", "DRYRUN", "ScheduledTask", &task_name, "");
+                log_action("DeleteTask", "DRYRUN", &component.key, &task_name, "");
             } else {
                 let del = run_process_capture(
                     &join_command(&[
@@ -444,14 +501,14 @@ pub fn handle_scheduled_tasks() {
                 log_action(
                     "DeleteTask",
                     if del.exit_code == 0 { "INFO" } else { "WARN" },
-                    "ScheduledTask",
+                    &component.key,
                     &task_name,
                     &trim(&del.output),
                 );
             }
         } else if disable_tasks {
             if !execute {
-                log_action("DisableTask", "DRYRUN", "ScheduledTask", &task_name, "");
+                log_action("DisableTask", "DRYRUN", &component.key, &task_name, "");
             } else {
                 let dis = run_process_capture(
                     &join_command(&[
@@ -466,7 +523,7 @@ pub fn handle_scheduled_tasks() {
                 log_action(
                     "DisableTask",
                     if dis.exit_code == 0 { "INFO" } else { "WARN" },
-                    "ScheduledTask",
+                    &component.key,
                     &task_name,
                     &trim(&dis.output),
                 );

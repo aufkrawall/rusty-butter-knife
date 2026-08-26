@@ -59,33 +59,6 @@ pub fn is_preserved_container_name(name_or_path: &str) -> bool {
     l.contains("nvdisplay.container") || l.contains("nvcontainer.exe")
 }
 
-/// Port of `isBloatProcessName`.
-pub fn is_bloat_process_name(exe: &str) -> bool {
-    const NAMES: &[&str] = &[
-        "nvtelemetrycontainer.exe",
-        "nvidia share.exe",
-        "nvidia web helper.exe",
-        "nvidia app.exe",
-        "nvbackend.exe",
-        "nvnodejslauncher.exe",
-        "nvsphelper64.exe",
-        "nvstreamservice.exe",
-        "nvstreamnetworkservice.exe",
-        "nvstreamuseragent.exe",
-        "nvidia overlay.exe",
-        "nvidia broadcast.exe",
-        "frameview.exe",
-        "presentmon.exe",
-    ];
-    let l = to_lower(exe);
-    if NAMES.iter().any(|n| *n == l) {
-        return true;
-    }
-    contains_no_case(exe, "telemetry")
-        || contains_no_case(exe, "shadowplay")
-        || contains_no_case(exe, "frameview")
-}
-
 /// Port of `moduleIsTelemetryOrUpdater` (matches on the file leaf).
 pub fn module_is_telemetry_or_updater(path: &str) -> bool {
     const GLOBS: &[&str] = &[
@@ -232,11 +205,276 @@ pub fn match_component_for_path(p: &Path, enabled: &EnabledMap) -> Option<&'stat
     None
 }
 
+// ---------------------------------------------------------------------------
+// Action-target classification (audit finding SAFETY-01)
+// ---------------------------------------------------------------------------
+
+/// One decision type shared by every mutation entry point: file discovery
+/// (match_component_for_path), process killing, service handling and
+/// scheduled-task handling all route through `ActionDecision` so that a
+/// deselected component prevents ALL associated mutations — files, processes,
+/// services AND tasks. Fail closed: unmatched targets are never mutated.
+#[derive(Debug)]
+pub enum ActionDecision {
+    /// No component claims this target; never mutate.
+    NotMatched,
+    /// A component owns this target but is deselected; never mutate.
+    ComponentDisabled(&'static Component),
+    /// A component owns this target and is enabled.
+    Allowed(&'static Component),
+}
+
+impl ActionDecision {
+    /// Owning component's catalog key when this decision permits mutation
+    /// (test helper; production sites pattern-match exhaustively instead).
+    #[cfg(test)]
+    pub fn allowed_key(&self) -> Option<&'static str> {
+        match self {
+            ActionDecision::Allowed(c) => Some(&c.key),
+            _ => None,
+        }
+    }
+
+    /// Resolve against the user's component selection.
+    pub fn resolve(key: &str, enabled: &EnabledMap) -> ActionDecision {
+        match build_components().iter().find(|c| c.key == key) {
+            Some(c) => {
+                if enabled.get(c.key.as_str()).copied().unwrap_or(false) {
+                    ActionDecision::Allowed(c)
+                } else {
+                    ActionDecision::ComponentDisabled(c)
+                }
+            }
+            // Unknown catalog key: fail closed.
+            None => ActionDecision::NotMatched,
+        }
+    }
+}
+
+/// Map one killable bloat process name (any case) to its owning component
+/// key. Mirrors the historically matched names of `isBloatProcessName`.
+fn classify_process_key(exe: &str) -> Option<&'static str> {
+    const EXACT_NAMES: &[(&str, &str)] = &[
+        ("nvtelemetrycontainer.exe", "Telemetry"),
+        ("nvidia share.exe", "ShadowPlayShare"),
+        ("nvsphelper64.exe", "ShadowPlayShare"),
+        ("nvidia web helper.exe", "GeForceExperienceAndNvidiaApp"),
+        ("nvidia app.exe", "GeForceExperienceAndNvidiaApp"),
+        ("nvbackend.exe", "GeForceExperienceAndNvidiaApp"),
+        ("nvnodejslauncher.exe", "GeForceExperienceAndNvidiaApp"),
+        ("nvidia overlay.exe", "GeForceExperienceAndNvidiaApp"),
+        ("nvidia broadcast.exe", "GeForceExperienceAndNvidiaApp"),
+        ("nvstreamservice.exe", "Shield"),
+        ("nvstreamnetworkservice.exe", "Shield"),
+        ("nvstreamuseragent.exe", "Shield"),
+        ("frameview.exe", "FrameView"),
+        ("presentmon.exe", "FrameView"),
+    ];
+    let l = to_lower(exe);
+    for (name, key) in EXACT_NAMES {
+        if *name == l {
+            return Some(key);
+        }
+    }
+    // Substring fallbacks preserving the historical containment rules.
+    if contains_no_case(exe, "telemetry") {
+        return Some("Telemetry");
+    }
+    if contains_no_case(exe, "shadowplay") {
+        return Some("ShadowPlayShare");
+    }
+    if contains_no_case(exe, "frameview") {
+        return Some("FrameView");
+    }
+    if contains_no_case(exe, "nvstream") {
+        return Some("Shield");
+    }
+    None
+}
+
+/// Component ownership for one killable process. Container-preservation is
+/// applied here so no other layer can accidentally bypass it.
+pub fn process_action_decision(
+    exe: &str,
+    enabled: &EnabledMap,
+    preserve_containers: bool,
+) -> ActionDecision {
+    if preserve_containers && is_preserved_container_name(exe) {
+        return ActionDecision::NotMatched;
+    }
+    match classify_process_key(exe) {
+        Some(key) => ActionDecision::resolve(key, enabled),
+        None => ActionDecision::NotMatched,
+    }
+}
+
+/// Term list mapping service/task display or key names onto owning components
+/// ((term, component key)). Order matters: first hit wins.
+const NAME_TERMS: &[(&str, &str)] = &[
+    ("telemetry", "Telemetry"),
+    ("displaydriverras", "Telemetry"),
+    ("profileupdater", "UpdateAndProfileUpdater"),
+    ("profile updater", "UpdateAndProfileUpdater"),
+    ("update", "UpdateAndProfileUpdater"),
+    ("frameview", "FrameView"),
+    ("presentmon", "FrameView"),
+    ("shadowplay", "ShadowPlayShare"),
+    ("share", "ShadowPlayShare"),
+    ("nvstream", "Shield"),
+    ("ansel", "AnselCamera"),
+    ("nvidia app", "GeForceExperienceAndNvidiaApp"),
+    ("geforce experience", "GeForceExperienceAndNvidiaApp"),
+    ("broadcast", "GeForceExperienceAndNvidiaApp"),
+    ("geforce", "GeForceExperienceAndNvidiaApp"),
+];
+
+fn classify_named_target(combined: &str) -> Option<&'static str> {
+    let l = to_lower(combined);
+    NAME_TERMS
+        .iter()
+        .find(|(term, _)| l.contains(term))
+        .map(|(_, key)| *key)
+}
+
+/// Component ownership for one Windows service.
+pub fn service_action_decision(
+    service_name: &str,
+    display_name: &str,
+    enabled: &EnabledMap,
+    preserve_containers: bool,
+) -> ActionDecision {
+    let combined = format!("{service_name} {display_name}");
+    if preserve_containers && is_preserved_container_name(&combined) {
+        return ActionDecision::NotMatched;
+    }
+    if !is_nvidia_context_string(&combined) {
+        return ActionDecision::NotMatched;
+    }
+    // VirtualAudio keeps its opt-in token rule (nvvad has no NVIDIA context).
+    if to_lower(&combined).contains("nvvad") {
+        return ActionDecision::resolve("VirtualAudio", enabled);
+    }
+    match classify_named_target(&combined) {
+        Some(key) => ActionDecision::resolve(key, enabled),
+        None => ActionDecision::NotMatched,
+    }
+}
+
+/// Component ownership for one scheduled task (matched by absolute task
+/// path/name).
+pub fn task_action_decision(task_name: &str, enabled: &EnabledMap) -> ActionDecision {
+    if !is_nvidia_context_string(task_name) {
+        return ActionDecision::NotMatched;
+    }
+    match classify_named_target(task_name) {
+        Some(key) => ActionDecision::resolve(key, enabled),
+        None => ActionDecision::NotMatched,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
     use std::path::PathBuf;
+
+    fn enabled_of(keys: &[&str]) -> EnabledMap {
+        keys.iter().map(|k| (k.to_string(), true)).collect()
+    }
+
+    #[test]
+    fn process_classification_maps_to_components() {
+        let on = enabled_of(&["Telemetry", "Shield", "ShadowPlayShare", "FrameView"]);
+        assert_eq!(
+            process_action_decision("NvTelemetryContainer.exe", &on, true).allowed_key(),
+            Some("Telemetry")
+        );
+        assert_eq!(
+            process_action_decision("NvStreamService.exe", &on, true).allowed_key(),
+            Some("Shield")
+        );
+        assert!(
+            process_action_decision("PresentMon-Main.exe", &on, true)
+                .allowed_key()
+                .is_none(),
+            "exact names only; PresentMon-<suffix> is not an exact bloat name"
+        );
+    }
+
+    #[test]
+    fn process_kill_blocked_when_component_disabled() {
+        let off: EnabledMap = BTreeMap::new(); // nothing enabled
+        match process_action_decision("nvtelemetrycontainer.exe", &off, false) {
+            ActionDecision::ComponentDisabled(c) => assert_eq!(c.key, "Telemetry"),
+            other => panic!("expected disabled, got {other:?}"),
+        }
+        // Preserved container never becomes a kill target.
+        let all = enabled_of(&["Telemetry"]);
+        assert!(matches!(
+            process_action_decision("NVDisplay.Container.exe", &all, true),
+            ActionDecision::NotMatched
+        ));
+    }
+
+    #[test]
+    fn service_classification_gates_by_component() {
+        let all = enabled_of(&[
+            "Telemetry",
+            "UpdateAndProfileUpdater",
+            "VirtualAudio",
+            "AnselCamera",
+            "GeForceExperienceAndNvidiaApp",
+        ]);
+        assert_eq!(
+            service_action_decision(
+                "NvTelemetryContainer",
+                "NVIDIA Telemetry Container",
+                &all,
+                true
+            )
+            .allowed_key(),
+            Some("Telemetry")
+        );
+        assert_eq!(
+            service_action_decision("NvBackend", "NVIDIA Backend", &all, true).allowed_key(),
+            None,
+            "unclassified NVIDIA-context service fails closed"
+        );
+        // Unrelated services keep the historical token-context guard.
+        assert!(matches!(
+            service_action_decision("InventorySvc", "Inventory", &all, true),
+            ActionDecision::NotMatched
+        ));
+        // nvvad opt-in rule preserved (no NVIDIA context otherwise).
+        assert_eq!(
+            service_action_decision("nvvadsvc", "NVIDIA Virtual Audio", &all, true).allowed_key(),
+            Some("VirtualAudio")
+        );
+        // Deselected component => ComponentDisabled, no mutation.
+        let none: EnabledMap = BTreeMap::new();
+        assert!(matches!(
+            service_action_decision("NvTelemetryContainer", "NVIDIA Telemetry", &none, false),
+            ActionDecision::ComponentDisabled(_)
+        ));
+    }
+
+    #[test]
+    fn task_classification_gates_by_component() {
+        let all = enabled_of(&["Telemetry", "UpdateAndProfileUpdater"]);
+        assert_eq!(
+            task_action_decision("\\NvTmrep\\NVIDIA Telemetry Task", &all).allowed_key(),
+            Some("Telemetry")
+        );
+        assert!(matches!(
+            task_action_decision("\\Inventory\\Scan", &all),
+            ActionDecision::NotMatched
+        ));
+        let none: EnabledMap = BTreeMap::new();
+        assert!(matches!(
+            task_action_decision("\\NvNode\\NVIDIA Update Task", &none),
+            ActionDecision::ComponentDisabled(_)
+        ));
+    }
 
     fn win(path_forward: &str) -> PathBuf {
         PathBuf::from(path_forward.replace("/", "\\"))
