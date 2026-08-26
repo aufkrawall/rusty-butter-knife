@@ -24,8 +24,9 @@ Copyright (c) 2026 aufkrawall
   root — its loop is `cargo build` (single-digit seconds). Stay in this loop
   while iterating; do not run extra verification after every small edit.
 - **Then close with exactly ONE gate.**
-  - Rust (primary): `cargo build` + `cargo clippy -- -D warnings`, zero
-    warnings. When behavior changed, one safe smoke run:
+  - Rust (primary): `cargo build` + `cargo clippy --all-targets -- -D warnings`
+    + `cargo test --all-targets`, zero failures. When behavior changed, one
+    safe smoke run:
     `./target/release/GreenPostInstallDebloatNative.exe --list-components`
     and/or `--dry-run` under a timeout (writes a gitignored log beside the
     binary).
@@ -33,9 +34,10 @@ Copyright (c) 2026 aufkrawall
     legacy `.cpp`.
   - Change touching CLI flags/help text -> additionally diff `--help` output
     against the flag table in `README.md` and update the README if they drift.
-- What the gate does NOT cover: there is no test suite, no linter beyond the
-  compiler warnings, no sanitizers, and no CI. Do not invent extra gates;
-  compiler warnings are the regression net.
+- What the gate does NOT cover: there is no CI, no sanitizers, and execute-
+  mode regression must run only on sacrificial VMs. `cargo test --all-targets`
+  is part of the gate (51 tests incl. real-Windows integration tests); pure
+  compiler warnings remain the first-line regression net.
 - No lint/static-analysis ratchet exists. Fix any new warning introduced by a
   change; `-Wall -Wextra` cleanliness is part of the gate.
 - No fuzzing stage exists.

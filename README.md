@@ -184,6 +184,20 @@ Set `$env:GPD_NO_PAUSE = 1` when automating.
 
 ## Safety notes
 
+- Every mutation target - files, processes, services AND scheduled tasks - is
+  classified against your component selection first; a deselected component
+  prevents ALL of its associated actions (not just file deletion), and
+  unclassifiable targets fail closed (never mutated).
+- Recursive operations never traverse reparse points (symlinks/junctions);
+  such entries may be removed themselves but their targets are untouched.
+- External-tool output capture is hard-bounded: timeouts terminate the child
+  promptly even when descendants inherited stdout, waits honor Ctrl+C, and
+  cross-builds cannot publish an exe with the wrong PE architecture.
+- A run aborts (FATAL) before any destructive stage if its audit log cannot
+  be written; large report sections are serialized across processes so they
+  cannot interleave in the shared log.
+- Malformed or unknown arguments in execute mode are rejected before any
+  change (exit code 13); dry runs only warn.
 - Destructive runs hold a single-instance mutex; overlapping execute-mode runs
   are refused with exit code 12.
 - System tools (`schtasks.exe`, `takeown.exe`, `icacls.exe`) are always invoked

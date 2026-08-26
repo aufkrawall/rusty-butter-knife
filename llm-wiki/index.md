@@ -1,7 +1,7 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-08-23 (verified against working tree at
-GPD_VERSION 1.5.0)
+Last cross-checked: 2026-08-26 (audit remediation landed; see
+log/recent.md)
 
 Primary sources:
 - `AGENTS.md`

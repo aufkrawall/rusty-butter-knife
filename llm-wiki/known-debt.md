@@ -1,6 +1,6 @@
 # Known and Accepted Debt
 
-Last verified: 2026-08-23
+Last verified: 2026-08-26
 
 Primary sources:
 - `AGENTS.md`
@@ -14,18 +14,20 @@ audits do not re-derive it and later agents do not "fix" it without weighing
 the same trade-off. Items here are *recorded*, not endorsed. Anything that
 becomes cheap or safe to fix should be fixed and removed from this page.
 
-## No automated test suite
+## No CI, no sanitizers, partial destructive-path coverage
 
-The project has zero tests. Verification is manual: warning-free build,
-`--list-components`, and `--dry-run` log inspection.
+Since 2026-08-26 the Rust crate has 51 tests (`cargo test --all-targets`),
+including REAL-WINDOWS integration tests (subprocess capture bounds,
+junction no-follow behavior) and pure-decision cores extracted for the
+service masks, TI wait state machine, CLI parsing and post-run reporting.
+Still missing: a CI runner, sanitizers/fuzzing, and execute-mode regression
+on real destructive targets (forbidden by policy; first execute regressions
+must run on a sacrificial VM).
 
-Why accepted: nearly all logic is coupled to live Win32 state (services,
-scheduled tasks, the real filesystem under NVIDIA install paths), so unit
-testing would require an abstraction layer disproportionate to a single-
-author utility, and integration tests would run destructive operations on
-real systems. What would need to be true to resolve: the predicate/matching
-layer gets decoupled from direct Win32 calls, or a fixture-tree-based dry-run
-harness is added.
+Why partly accepted: matching/report logic is now decoupled and tested, but
+the truly destructive Win32 call sites remain covered only by dry-run smoke
+verification. To resolve further: VM-based harness executing the tool with
+synthetic fixtures.
 
 ## Single ~2500-line translation unit (LEGACY C++ ONLY)
 
@@ -103,5 +105,26 @@ re-derived:
 - The llvm-mingw archive SHA256 is now pinned in `build.py`
   (`LLVM_MINGW_SHA256`, taken from the GitHub release asset digest) and
   verified automatically on every fresh download; `--sha256` overrides.
-- Service handles are opened with rights matched to the requested
-  operations, so DACL-denied DELETE no longer blocks stop/disable flows.
+- Service handles opened with rights matched to requested operations:
+  NOTE — this bullet was recorded as resolved on 2026-08-23 but was NOT
+  actually landed in code (an overclaim; open_service_for_ops still merged
+  CHANGE_CONFIG|DELETE). It was genuinely implemented on 2026-08-26 via
+  ffi_services::desired_access_for_ops with exact-mask unit tests; audit
+  cross-check confirmed the code never matched the claim until then.
+
+## Audit remediation leftovers (2026-08-26, weighed and accepted)
+
+From the GreenPostInstallDebloatNative — Audit Handoff Summary pass:
+
+- takeown/icacls external utilities are still used for ownership changes.
+  The locale yes-letter winner is memoized process-wide (single round-trip
+  per candidate after discovery), but native SID/security APIs would remove
+  the 120 s subprocess timeouts entirely. Deferred: substantial unsafe
+  surface (AdjustTokenPrivileges + SeTakeOwnership) for marginal gain under
+  TrustedInstaller context.
+- Legacy C++ retains ALL pre-2026-08-26 defects (capture hang, combined
+  service rights, fire-and-forget stop). It is NO LONGER default-built or
+  distributed (`python build.py --variant cpp|all` keeps it buildable);
+  parity fixes in the reference TU would violate its must-not-grow rule.
+- COM VARIANT helpers intentionally leak BSTRs on success paths (unchanged;
+  see above).

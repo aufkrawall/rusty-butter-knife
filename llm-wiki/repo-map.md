@@ -1,7 +1,6 @@
 # Repo Map (code map)
 
-Last cross-checked: 2026-08-23 (verified against working tree, GPD_VERSION
-1.5.0, source ~2500 lines)
+Last cross-checked: 2026-08-26 (audit remediation; GPD_VERSION 1.5.0)
 
 Primary sources:
 - top-level repo layout (verified against the working tree)
@@ -21,12 +20,19 @@ anchors; the file is a single translation unit).
   legacy TU; every module under the ~800-line ceiling:
   `main.rs` (orchestration, wmain flow), `app.rs` (globals/exit codes),
   `types.rs`, `util.rs`, `winfmt.rs`, `console.rs`, `logging.rs`,
-  `components.rs`, `options.rs`, `menu.rs`, `sysinfo.rs`, `procs.rs`,
-  `matching.rs`, `discovery.rs`, `actions.rs`, `deletion.rs`,
-  `report.rs`, `tasksched.rs`; plus the FFI boundary family
-  (`ffi.rs`, `ffi_services.rs`, `ffi_tasksched.rs`) — the ONLY modules
-  containing `unsafe` (crate root denies it elsewhere). Build via
-  `cargo build --release`; gate adds clippy -D warnings + fmt.
+  `components.rs`, `options.rs` (strict CLI parsing + bad-args gate),
+  `menu.rs`, `sysinfo.rs`, `procs.rs`,
+  `matching.rs` (predicates + ActionDecision classification layer),
+  `discovery.rs`, `actions.rs` (component-gated mutations),
+  `deletion.rs` (reparse-aware deletion + reboot scheduling),
+  `report.rs` (tri-state verification, VerifyOutcome core),
+  `tasksched.rs` (TI relaunch + pure ti_poll_decision),
+  plus the FFI boundary family (`ffi.rs`, `ffi_capture.rs`,
+  `ffi_services.rs`, `ffi_tasksched.rs`) and `fsutil.rs` (no-follow
+  PathKind helpers) — the ffi* modules are the ONLY ones containing
+  `unsafe` (crate root denies it elsewhere). Build via
+  `cargo build --release`; gate adds clippy -D warnings, fmt, and
+  cargo test (51 tests incl. subprocess/junction integration).
 - `GreenPostInstallDebloatNative.cpp` — LEGACY C++17 single TU, kept as
   reference and still buildable; must not grow. Section map by first
   defining line (the Rust modules in `src/` mirror these sections 1:1):
@@ -86,13 +92,16 @@ anchors; the file is a single translation unit).
   - ~2332–2499: `relaunchElevatedForWizard` (UAC relaunch with forwarded
     selection), `consoleCtrlHandler` (graceful abort → exit code 3),
     `wmain`.
-- `build.py` — UNIFIED build entry point: builds BOTH variants by default
-  into marked subfolders (`dist/cpp-<arch>/`, `dist/rust-<arch>/`);
-  `--variant {all,cpp,rust}` selects a leg. For the C++ leg it pins llvm-mingw
-  (`LLVM_MINGW_VERSION`), downloads/SHA256-verifies/extracts into `mingw64/`
+- `build.py` — build entry point: DEFAULT variant is rust only; the legacy
+  C++ TU is reference code buildable via `--variant cpp` / `--variant all`.
+  Output lands in `dist/<variant>-<arch>/`. Every artifact's PE COFF machine
+  type is parsed and verified against the requested arch before publishing.
+  For the C++ leg it pins llvm-mingw (`LLVM_MINGW_VERSION`),
+  downloads/SHA256-verifies/extracts into `mingw64/`
   if missing, falls back to system `clang++`. Compile flags: `-std=c++17
-  -municode -O2 -Wall -Wextra -static`; targets x86_64 (default) and aarch64
-  via `--target=aarch64-w64-mingw32`. Both arches write the same output name.
+  -municode -O2 -Wall -Wextra -static`; targets are EXPLICIT per arch:
+  `--target=x86_64-w64-mingw32` / `--target=aarch64-w64-mingw32` for C++, and
+  msvc triples for Rust (x86_64-pc-windows-msvc / aarch64-pc-windows-msvc).
 - `Run-GreenPostInstallDebloat.ps1` — user-facing wrapper: self-elevates via
   UAC, runs the full destructive flag set, keeps window open, forwards extra
   args; honors `GPD_NO_PAUSE=1` for automation.

@@ -69,7 +69,9 @@ party libraries at all today.
 4. **Encoding/quoting helpers**: quoteArg/joinCommand (Windows argv quoting),
    wildcardMatchNoCase, OEM-codepage decode are subtle; behavioral drift here
    changes matching results on localized systems. Needs golden-output diffs.
-5. **Verification gap**: no test suite exists (known-debt.md), so the safety
+5. **Verification gap**: HISTORICAL (port landed; since 2026-08-26 the
+   crate has 51 tests incl. subprocess/junction integration — see
+   known-debt.md for remaining coverage gaps). The safety
    net during rewrite is `--dry-run` output comparison between the C++ and
    Rust builds on the same machine (candidates list should match line-for-
    line). This is the main reason a port is riskier than routine work here.
