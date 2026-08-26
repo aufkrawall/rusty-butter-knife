@@ -9,7 +9,7 @@ use crate::actions::{
 use crate::app;
 use crate::components::build_components;
 use crate::discovery::{discover_candidates, tally_previous_logs, write_candidates_to_log};
-use crate::logging::{append_utf8_file, log_line};
+use crate::logging::{append_block_serialized, log_line};
 use crate::sysinfo::{current_token_account, is_admin, is_trusted_installer};
 use crate::util::json_escape;
 
@@ -159,7 +159,7 @@ pub fn write_report() {
     ss.push_str("}\n");
 
     let log_path = app::run(|s| s.log_path.clone());
-    append_utf8_file(&log_path, &ss);
+    append_block_serialized(&log_path, &ss); // JSON report block: serialized
 
     let status_summary = by_status
         .iter()
@@ -300,7 +300,7 @@ pub fn verify_candidate_removal() {
         ss.push_str(&summary);
     }
     let log_path = app::run(|s| s.log_path.clone());
-    append_utf8_file(&log_path, &ss);
+    append_block_serialized(&log_path, &ss);
 
     if candidates.is_empty() {
         log_line(
@@ -327,6 +327,10 @@ pub fn verify_candidate_removal() {
 /// Port of `runCleanup`. Returns Err(message) where the C++ threw — the caller
 /// maps that onto the FATAL/exit-code-1 path.
 pub fn run_cleanup() -> Result<(), String> {
+    // Fail closed BEFORE any destructive stage: an unwritable audit log must
+    // abort the run (audit logging finding).
+    let probe_path = app::run(|s| s.log_path.clone());
+    crate::ffi::ensure_log_writable(&probe_path)?;
     let run_id = app::run(|s| s.run_id.clone());
     let exe_path = app::run(|s| s.exe_path.to_string_lossy().into_owned());
     let log_path = app::run(|s| s.log_path.to_string_lossy().into_owned());

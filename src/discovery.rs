@@ -8,7 +8,7 @@ use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use crate::app;
-use crate::logging::{append_utf8_file, log_line};
+use crate::logging::{append_block_serialized, log_line};
 use crate::matching::match_component_for_path;
 use crate::matching::should_prune_traversal;
 use crate::types::Candidate;
@@ -255,7 +255,7 @@ pub fn discover_candidates(enabled: &crate::app::EnabledMap) {
         line.push_str(&format!("{key}={n}"));
     }
     let log_path = app::run(|s| s.log_path.clone());
-    append_utf8_file(&log_path, &ss);
+    append_block_serialized(&log_path, &ss);
     log_line("INFO", &format!("Discovered per component: {line}"));
 
     if candidate_count == 0 {
@@ -388,5 +388,5 @@ pub fn write_candidates_to_log() {
         ss.push_str(&r);
         ss.push('\n');
     }
-    append_utf8_file(&log_path, &ss);
+    append_block_serialized(&log_path, &ss);
 }

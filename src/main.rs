@@ -76,7 +76,14 @@ fn write_status_json(exit_code: i32, status: &str, detail: &str) {
         util::json_escape(detail),
         util::json_escape(&log_path),
     );
-    let _ = std::fs::write(path, json);
+    if let Err(e) = std::fs::write(path, json) {
+        console::err_out(&format!(
+            "ERROR: failed to write status file {}: {}
+",
+            path.display(),
+            e
+        ));
+    }
 }
 
 /// Port of the wmain try-block. Errors returned as Err(String) map onto the

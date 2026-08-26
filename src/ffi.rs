@@ -226,6 +226,10 @@ impl MutexGuard {
     pub fn held(&self) -> bool {
         !self.handle.is_null()
     }
+
+    pub(crate) fn raw(&self) -> HANDLE {
+        self.handle
+    }
 }
 
 impl Drop for MutexGuard {
@@ -245,6 +249,39 @@ pub fn create_global_mutex(name: &str) -> (MutexGuard, bool) {
     let h = unsafe { CreateMutexW(std::ptr::null(), 1, wname.as_ptr()) };
     let existed = last_error() == ERROR_ALREADY_EXISTS && !h.is_null();
     (MutexGuard { handle: h }, existed)
+}
+
+const WAIT_OBJECT_0: u32 = 0;
+
+/// Acquire `name` within `ms` and return a guard that must be dropped to
+/// release; None on timeout/creation failure so callers can degrade.
+pub fn try_acquire_named_mutex(name: &str, ms: u32) -> Option<MutexGuard> {
+    let (guard, _) = create_global_mutex(name);
+    if guard.held() {
+        let res =
+            // SAFETY: valid named-mutex handle owned by the returned guard.
+            unsafe { WaitForSingleObject(guard.raw(), ms) };
+        if res == WAIT_OBJECT_0 {
+            return Some(guard);
+        }
+    }
+    None
+}
+
+// ---------------------------------------------------------------------------
+// Audit-log writability probe (fail-closed destructive runs)
+// ---------------------------------------------------------------------------
+
+/// Verify the run log can actually be opened for appending BEFORE any
+/// destructive stage starts. Uses std to stay outside this module's Win32
+/// surface; the file path comes from initialized run state.
+pub fn ensure_log_writable(path: &std::path::Path) -> Result<(), String> {
+    std::fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(path)
+        .map(|_| ())
+        .map_err(|e| format!("run log {} is not writable: {}", path.display(), e))
 }
 
 // ---------------------------------------------------------------------------
