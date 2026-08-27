@@ -1,6 +1,7 @@
 # Current State
 
-Last cross-checked: 2026-08-26 (GPD_VERSION 1.5.0, post audit-remediation)
+Last cross-checked: 2026-08-27 (audit pass 3: root-reparse fix + abort-aware
+TI wait; GPD_VERSION 1.5.0)
 
 ## Summary
 

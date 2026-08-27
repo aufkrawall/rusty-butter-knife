@@ -18,7 +18,6 @@ pub const GPD_VERSION: &str = "1.5.0";
 pub const K_TI_TASK_PREFIX: &str = "NvDebloatTI-";
 
 // Exit codes (contract surface: PowerShell wrapper + parent/child handoff).
-// Exit codes (contract surface: PowerShell wrapper + parent/child handoff).
 pub const EXIT_OK: i32 = 0;
 pub const EXIT_FATAL_EXCEPTION: i32 = 1;
 pub const EXIT_FATAL_UNKNOWN: i32 = 2;
@@ -78,6 +77,14 @@ pub fn opts_mut<R>(f: impl FnOnce(&mut Options) -> R) -> R {
 pub fn run<R>(f: impl FnOnce(&RunState) -> R) -> R {
     let g = lock(&RUN);
     f(g.as_ref().expect("run state initialized"))
+}
+
+/// Fallible variant for paths that may legitimately run before initialization
+/// (the FATAL handler itself): None instead of a panic when the run state was
+/// never set, so the last-resort error path cannot die of a second panic.
+pub fn run_opt<R>(f: impl FnOnce(&RunState) -> R) -> Option<R> {
+    let g = lock(&RUN);
+    g.as_ref().map(f)
 }
 
 pub fn run_mut<R>(f: impl FnOnce(&mut RunState) -> R) -> R {

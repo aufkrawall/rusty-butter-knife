@@ -55,6 +55,12 @@ extern "system" fn console_ctrl_handler(ctrl_type: u32) -> i32 {
 /// Status JSON writer (port of `writeStatusJson`). Field names and layout are
 /// a cross-version contract — do not change.
 fn write_status_json(exit_code: i32, status: &str, detail: &str) {
+    // Paths that fail before option initialization (e.g. a panic during early
+    // parsing) have no status file and no log path; the FATAL handler must
+    // not panic here itself.
+    if !app::opts_initialized() {
+        return;
+    }
     let status_file = app::opts(|o| o.status_file.clone());
     if status_file.is_empty() {
         return;
@@ -287,6 +293,13 @@ fn wmain_try(args: &[String]) -> Result<i32, String> {
                 );
                 return Ok(EXIT_TI_CHILD_FAILED);
             }
+            if ti_result.aborted {
+                // The wait was cancelled (Ctrl+C); the scheduled task was
+                // already stopped and deleted. Report the documented abort
+                // outcome instead of a relaunch failure.
+                write_status_json(EXIT_ABORTED, "aborted", &ti_result.detail);
+                return Ok(EXIT_ABORTED);
+            }
             if !app::opts(|o| o.allow_admin_fallback) {
                 let detail_suffix = if ti_result.detail.is_empty() {
                     ".".to_string()
@@ -376,7 +389,13 @@ fn maybe_pause_on_exit() {
 fn main() {
     ffi::set_console_ctrl_handler(console_ctrl_handler);
 
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    // args_os (not args): a non-UTF-8 argument must not panic the process
+    // before the catch_unwind FATAL gate exists; lossy conversion matches
+    // the program's general from_utf16_lossy style.
+    let args: Vec<String> = std::env::args_os()
+        .skip(1)
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| wmain_try(&args)));
 

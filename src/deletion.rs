@@ -353,8 +353,15 @@ pub fn delete_candidate(index: usize) {
     let kind = crate::fsutil::path_kind_no_follow(&c.path).ok();
     let treat_as_directory = match kind {
         Some(crate::fsutil::PathKind::Directory) => true,
+        // Reparse entries are removed AS ENTRIES (the link itself), never
+        // descended into (FS-01). remove_tree_counted handles junction and
+        // file-symlink roots entry-wise; plain DeleteFileW cannot remove a
+        // directory junction, so routing reparse candidates here would
+        // guarantee a failed delete and push the work into the reboot-
+        // scheduling fallback.
+        Some(crate::fsutil::PathKind::Reparse) => true,
         Some(crate::fsutil::PathKind::Missing | crate::fsutil::PathKind::File) => false,
-        _ => c.is_directory, // Reparse or unverifiable: legacy hint as fallback
+        _ => c.is_directory, // Unverifiable stat: legacy hint as fallback
     };
 
     let result: Result<(), String> = if treat_as_directory {

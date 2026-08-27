@@ -19,6 +19,8 @@ pub struct TiRelaunchResult {
     pub child_status_seen: bool,
     pub child_succeeded: bool,
     pub child_exit_code: i64,
+    /// abort request (Ctrl+C family) escaped the wait; the task was stopped
+    pub aborted: bool,
     pub detail: String,
 }
 
@@ -257,6 +259,20 @@ pub fn attempt_trusted_installer_relaunch() -> TiRelaunchResult {
     let mut timed_out = true;
 
     while waited < opts.ti_wait_seconds {
+        // Cancellation checkpoint (parity with the UAC wait and subprocess
+        // capture): a Ctrl+C request must escape this loop promptly instead
+        // of riding out up to ti_wait_seconds. finish_task() below stops and
+        // deletes the task, so an aborted wait leaves no running worker.
+        if app::ABORT_REQUESTED.load(std::sync::atomic::Ordering::SeqCst) {
+            log_line(
+                "WARN",
+                "Abort requested while waiting for the TI child; stopping the scheduled task.",
+            );
+            res.aborted = true;
+            res.detail = "aborted while waiting for TI child".to_string();
+            timed_out = false;
+            break;
+        }
         let polled = registered.poll_state();
         let (state_running, state_queued) = match polled {
             Some(TiState::Running) => {
@@ -308,7 +324,14 @@ pub fn attempt_trusted_installer_relaunch() -> TiRelaunchResult {
                 &format!("Still waiting for TI child... ({waited}s)"),
             );
         }
-        std::thread::sleep(Duration::from_secs(3));
+        // Abort-aware 3 s wait in short slices so the checkpoint above
+        // reacts promptly; this is a cancellation checkpoint, not a delay.
+        for _ in 0..10 {
+            if app::ABORT_REQUESTED.load(std::sync::atomic::Ordering::SeqCst) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(300));
+        }
         waited += 3;
     }
 

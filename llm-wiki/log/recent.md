@@ -1,3 +1,54 @@
+## 2026-08-27 — Full-repo audit pass 3: root-reparse traversal fix + abort-aware TI wait
+
+Template audit of the entire repo (Rust primary line-by-line, build/wrapper/
+docs/binary). All 2026-08-26 remediation claims verified as genuinely landed.
+Findings delivered in chat; recommendable fixes implemented same session.
+
+1. FS-01 ROOT case (High, confirmed by test-first repro): `fsutil::
+   for_each_postorder` expanded a junction/symlink ROOT (read_dir follows
+   junctions), so `schedule_delete_tree` on a reparse candidate that failed
+   direct deletion scheduled the junction TARGET's contents for reboot
+   deletion. Existing junction test only covered junction CHILDREN. Fix:
+   root is no-follow-probed first — Reparse/File/unreadable roots are
+   emitted as single entries, never expanded. Companion fix in
+   `deletion::delete_candidate`: PathKind::Reparse candidates now route to
+   `remove_tree_counted` (entry-wise removal; DeleteFileW cannot remove a
+   directory junction, so the old file-path routing guaranteed failure and
+   pushed work into the scheduling fallback). Regression test
+   `junction_root_is_emitted_but_never_expanded` fails on the old code.
+2. HANG-03/TI-abort: the TI-relaunch parent wait loop was the only
+   non-abort-aware wait left (bare 3 s sleep, up to ti_wait_seconds).
+   Now checks ABORT_REQUESTED per poll + 300 ms sleep slices;
+   `TiRelaunchResult.aborted` plumbed into main → exit code 3 path;
+   finish_task() stops+deletes the task on abort (correct: no orphaned
+   SYSTEM worker after the user says stop).
+3. CLI fail-closed gap: `--log-file --dry-run` consumed the next flag as
+   the value, silently dropping a dry-run request from an execute run.
+   Flag-like values (leading '-') are now recorded as problems → exit 13
+   in execute mode. NOTE: C++ parseArgs retains the old behavior (parity
+   abandoned deliberately, fail-closed direction wins).
+4. Robustness: `std::env::args_os()` (non-UTF-8 argv no longer aborts
+   before the catch_unwind FATAL gate); FATAL finalization is pre-init safe
+   (`app::run_opt`, `opts_initialized` guards in write_status_json/log_line).
+5. Docs: README --component row now states strict execute-mode rejection.
+
+Gates: cargo fmt/build/clippy -D warnings clean; 53 tests green (51+2);
+smokes: --list-components/--version/--help/--dry-run exit 0; execute+badarg
+exit 13; execute+flag-like-value exit 13; dry-run+badarg exit 0 warn-only;
+README Flags section vs --help diff = 33/33 sync. dist NOT rebuilt (no
+release requested; dist artifacts predate these fixes — stale-risk noted).
+
+Falsified/checked this pass — do not re-raise: ERROR_FILE_READ_ONLY=6009 is
+a real winerror.h constant; task matching intentionally has no container-
+preserve check (C++ parity); discovery walk() root kind is checked; UAC
+relaunch vs execute-mutex ordering is correct (relaunch precedes mutex);
+zip extraction in build.py is Zip-Slip-safe (stdlib sanitizes '..' parts).
+
+Known leftovers (weighed, see known-debt.md): delete+disable task flag
+precedence; 0xFFFF_FFFD abandoned-vs-exit-3 sentinel collision; full-file
+historical log reads; dead ti_poll_decision parameter; legacy .cpp header
+build-default text stale (file must not grow; README is the contract).
+
 ## 2026-08-26 — Audit Handoff Summary remediation (9-step patch order)
 
 All P0/P1 findings from `GreenPostInstallDebloatNative — Audit Handoff

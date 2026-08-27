@@ -219,16 +219,27 @@ pub fn parse_args(args: &[String]) -> Options {
         {
             i += 1;
             let v = args[i].clone();
-            match low.as_str() {
-                "--status-file" => opt.status_file = v,
-                "--log-dir" => opt.log_dir_override = v,
-                "--log-file" => opt.log_file_override = v,
-                "--ti-wait-seconds" => {
-                    if let Some(problem) = apply_ti_wait_seconds(&v, &mut opt) {
-                        opt.unknown_args.push(problem);
+            // A value that itself looks like a flag means the flag's value is
+            // missing. Record it as a problem so execute mode fails closed
+            // instead of silently swallowing the next switch (e.g.
+            // "--log-file --dry-run" would otherwise drop the dry-run
+            // request from a destructive run).
+            if v.starts_with('-') && v.len() > 1 {
+                opt.unknown_args.push(format!(
+                    "{a} is missing its value (found flag-like '{v}' instead)"
+                ));
+            } else {
+                match low.as_str() {
+                    "--status-file" => opt.status_file = v,
+                    "--log-dir" => opt.log_dir_override = v,
+                    "--log-file" => opt.log_file_override = v,
+                    "--ti-wait-seconds" => {
+                        if let Some(problem) = apply_ti_wait_seconds(&v, &mut opt) {
+                            opt.unknown_args.push(problem);
+                        }
                     }
+                    _ => {}
                 }
-                _ => {}
             }
         } else if let Some(v) = a.strip_prefix("--ti-wait-seconds=") {
             if let Some(problem) = apply_ti_wait_seconds(v, &mut opt) {
@@ -418,6 +429,19 @@ mod tests {
         assert_eq!(opt.ti_wait_seconds, 7200);
         // Non-numeric is rejected outright.
         assert!(apply_ti_wait_seconds("abc", &mut opt).is_some());
+    }
+
+    #[test]
+    fn flag_like_value_is_a_problem_not_a_silent_swallow() {
+        // Regression: "--log-file --dry-run" used to consume the dry-run
+        // switch as the log-file value, silently dropping the dry-run request
+        // from what stays an execute run. The flag-like value must land in
+        // unknown_args (execute mode rejects those before any mutation).
+        let opts = parse_args(&["--execute".into(), "--log-file".into(), "--dry-run".into()]);
+        assert!(opts.log_file_override.is_empty());
+        assert_eq!(opts.unknown_args.len(), 1);
+        assert!(opts.unknown_args[0].contains("--log-file"));
+        assert!(opts.unknown_args[0].contains("--dry-run"));
     }
 
     #[test]

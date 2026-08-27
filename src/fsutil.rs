@@ -64,6 +64,18 @@ enum Work {
 /// callback to stop early. The callback also receives the root (with its
 /// kind; `Missing` included so callers decide what absence means).
 pub fn for_each_postorder(root: &Path, visit: &mut dyn FnMut(&Path, PathKind) -> bool) -> bool {
+    // The ROOT must be probed with no-follow semantics BEFORE any expansion:
+    // read_dir on a junction/symlink root happily enumerates the TARGET's
+    // children, so pushing Work::Expand for a reparse root would traverse
+    // straight through the FS-01 boundary (schedule_delete_tree would then
+    // schedule the target's contents for deletion). A reparse, file, or
+    // unreadable root is emitted as a single entry instead.
+    match path_kind_no_follow(root) {
+        Ok(PathKind::Reparse) => return visit(root, PathKind::Reparse),
+        Ok(PathKind::File) => return visit(root, PathKind::File),
+        Err(_) => return visit(root, PathKind::Missing),
+        Ok(PathKind::Missing) | Ok(PathKind::Directory) => {}
+    }
     let mut stack: Vec<Work> = vec![Work::Expand(root.to_path_buf())];
 
     while let Some(work) = stack.pop() {
@@ -184,6 +196,42 @@ mod tests {
             !seen.iter().any(|s| s.starts_with(&link_prefix)),
             "walk crossed the junction target"
         );
+    }
+
+    #[test]
+    fn junction_root_is_emitted_but_never_expanded() {
+        // Regression (FS-01, ROOT case): walking FROM a reparse-point root
+        // must emit only the junction entry itself. read_dir would happily
+        // enumerate the junction TARGET, and schedule_delete_tree would then
+        // schedule every file inside the target for deletion at reboot.
+        let t = TempDir::new("junction-root");
+        let secret = t.child("secret");
+        std::fs::create_dir_all(&secret).unwrap();
+        std::fs::write(secret.join("payload.txt"), b"x").unwrap();
+        let link = t.child("link");
+        let made = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(&secret)
+            .status()
+            .map(|st| st.success())
+            .unwrap_or(false);
+        if !made {
+            return;
+        }
+
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        for_each_postorder(&link, &mut |p, _k| {
+            seen.insert(to_lower(&p.to_string_lossy()));
+            true
+        });
+        let link_lower = to_lower(&link.to_string_lossy());
+        assert_eq!(
+            seen.len(),
+            1,
+            "only the junction entry may be visited, got {seen:?}"
+        );
+        assert!(seen.iter().any(|s| s == &link_lower));
     }
 
     #[test]

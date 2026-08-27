@@ -61,6 +61,11 @@ fn color_for_level(level: &str) -> u16 {
 }
 
 fn no_color() -> bool {
+    // Pre-init FATAL lines (run state not yet set up) cannot know the flag;
+    // default to color-off there instead of panicking in the error path.
+    if !app::opts_initialized() {
+        return true;
+    }
     app::opts(|o| o.no_color)
 }
 
@@ -74,9 +79,12 @@ pub fn log_line(level: &str, message: &str) {
     console::set_color(color, colored);
     console::out(&line);
     console::set_color(COLOR_WHITE, colored);
-    let log_path = app::run(|s| s.log_path.clone());
-    if let Err(e) = append_utf8_file(&log_path, &line) {
-        report_append_failure_once(&e, &log_path);
+    // Pre-init FATAL lines have no run log yet; skip the append instead of
+    // panicking inside the FATAL handler.
+    if let Some(log_path) = app::run_opt(|s| s.log_path.clone()) {
+        if let Err(e) = append_utf8_file(&log_path, &line) {
+            report_append_failure_once(&e, &log_path);
+        }
     }
 }
 
