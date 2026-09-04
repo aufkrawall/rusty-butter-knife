@@ -42,7 +42,7 @@ pub fn append_utf8_file(path: &std::path::Path, text: &str) -> std::io::Result<(
 /// mid-section. Falls back to a direct append if the mutex is unavailable
 /// for a bounded grace; append errors are surfaced exactly once.
 pub fn append_block_serialized(path: &std::path::Path, text: &str) {
-    const WAIT_GRACE_MS: u32 = 30_000;
+    const WAIT_GRACE_MS: u32 = 5_000;
     let acquired = crate::ffi::try_acquire_named_mutex(K_LOG_MUTEX_NAME, WAIT_GRACE_MS);
     let result = append_utf8_file(path, text);
     drop(acquired); // releases if it was acquired
@@ -51,7 +51,7 @@ pub fn append_block_serialized(path: &std::path::Path, text: &str) {
     }
 }
 
-fn color_for_level(level: &str) -> u16 {
+pub(crate) fn color_for_level(level: &str) -> u16 {
     match level {
         "ERROR" | "FATAL" => COLOR_RED,
         "WARN" => COLOR_YELLOW,
@@ -60,7 +60,7 @@ fn color_for_level(level: &str) -> u16 {
     }
 }
 
-fn no_color() -> bool {
+pub(crate) fn no_color() -> bool {
     // Pre-init FATAL lines (run state not yet set up) cannot know the flag;
     // default to color-off there instead of panicking in the error path.
     if !app::opts_initialized() {

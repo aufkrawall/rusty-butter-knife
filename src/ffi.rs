@@ -37,7 +37,7 @@ use windows_sys::Win32::System::SystemInformation::{
 };
 use windows_sys::Win32::System::Threading::{
     CreateMutexW, GetCurrentProcess, GetCurrentProcessId, GetExitCodeProcess, OpenProcess,
-    OpenProcessToken, TerminateProcess, WaitForSingleObject, PROCESS_TERMINATE,
+    OpenProcessToken, ReleaseMutex, TerminateProcess, WaitForSingleObject, PROCESS_TERMINATE,
 };
 use windows_sys::Win32::UI::Shell::{
     ShellExecuteExW, SEE_MASK_FLAG_DDEWAIT, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS,
@@ -227,6 +227,7 @@ impl MutexGuard {
         !self.handle.is_null()
     }
 
+    #[allow(dead_code)]
     pub(crate) fn raw(&self) -> HANDLE {
         self.handle
     }
@@ -251,21 +252,41 @@ pub fn create_global_mutex(name: &str) -> (MutexGuard, bool) {
     (MutexGuard { handle: h }, existed)
 }
 
-const WAIT_OBJECT_0: u32 = 0;
+pub struct NamedMutexLock {
+    handle: HANDLE,
+}
 
-/// Acquire `name` within `ms` and return a guard that must be dropped to
-/// release; None on timeout/creation failure so callers can degrade.
-pub fn try_acquire_named_mutex(name: &str, ms: u32) -> Option<MutexGuard> {
-    let (guard, _) = create_global_mutex(name);
-    if guard.held() {
-        let res =
-            // SAFETY: valid named-mutex handle owned by the returned guard.
-            unsafe { WaitForSingleObject(guard.raw(), ms) };
-        if res == WAIT_OBJECT_0 {
-            return Some(guard);
+impl Drop for NamedMutexLock {
+    fn drop(&mut self) {
+        if !self.handle.is_null() {
+            unsafe {
+                ReleaseMutex(self.handle);
+                CloseHandle(self.handle);
+            }
         }
     }
-    None
+}
+
+const WAIT_OBJECT_0: u32 = 0;
+const WAIT_ABANDONED_0: u32 = 0x0000_0080;
+
+/// Acquire `name` within `ms` and return a lock guard that releases the mutex
+/// and closes the handle on Drop; None on timeout/creation failure so callers can degrade.
+pub fn try_acquire_named_mutex(name: &str, ms: u32) -> Option<NamedMutexLock> {
+    let wname = wide(name);
+    // SAFETY: open-or-create with bInitialOwner = 0 so creation never takes
+    // ownership without going through WaitForSingleObject.
+    let h = unsafe { CreateMutexW(std::ptr::null(), 0, wname.as_ptr()) };
+    if h.is_null() {
+        return None;
+    }
+    let res = unsafe { WaitForSingleObject(h, ms) };
+    if res == WAIT_OBJECT_0 || res == WAIT_ABANDONED_0 {
+        Some(NamedMutexLock { handle: h })
+    } else {
+        unsafe { CloseHandle(h) };
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------

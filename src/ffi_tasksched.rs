@@ -208,6 +208,42 @@ impl TiSession {
         removed
     }
 
+    /// Fast COM enumeration of all registered task paths across all folders
+    /// (replaces slow schtasks.exe /Query).
+    pub fn enumerate_all_task_paths(&self) -> Vec<String> {
+        let mut paths = Vec::new();
+        let Some(root) = &self.root else {
+            return paths;
+        };
+        fn walk_folder(folder: &ITaskFolder, out: &mut Vec<String>) {
+            // SAFETY: interface calls on valid owned COM pointers.
+            if let Ok(tasks) = unsafe { folder.GetTasks(TASK_ENUM_HIDDEN.0) } {
+                let mut count = 0i32;
+                if (unsafe { tasks.Count() }).map(|c| count = c).is_ok() {
+                    for i in 1..=count {
+                        if let Ok(item) = unsafe { tasks.get_Item(&var_i32(i)) } {
+                            if let Ok(p) = unsafe { item.Path() } {
+                                out.push(p.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            if let Ok(subfolders) = unsafe { folder.GetFolders(0) } {
+                let mut count = 0i32;
+                if (unsafe { subfolders.Count() }).map(|c| count = c).is_ok() {
+                    for i in 1..=count {
+                        if let Ok(sub) = unsafe { subfolders.get_Item(&var_i32(i)) } {
+                            walk_folder(&sub, out);
+                        }
+                    }
+                }
+            }
+        }
+        walk_folder(root, &mut paths);
+        paths
+    }
+
     /// Remove a previous instance of `task_name` if present (Stop+Delete).
     pub fn delete_task_if_exists(&self, task_name: &str) {
         let Some(root) = &self.root else { return };
@@ -252,6 +288,7 @@ impl TiSession {
             let _ = unsafe { settings.SetMultipleInstances(TASK_INSTANCES_IGNORE_NEW) };
             let _ = unsafe { settings.SetExecutionTimeLimit(&BSTR::from("PT2H")) };
             let _ = unsafe { settings.SetStartWhenAvailable(false.into()) };
+            let _ = unsafe { settings.SetPriority(4) };
         }
         if let Ok(actions) = unsafe { def.Actions() } {
             if let Ok(action) = unsafe { actions.Create(TASK_ACTION_EXEC) } {

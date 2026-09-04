@@ -1,3 +1,39 @@
+## 2026-09-04 — Root-cause fixes for debloat execution hang / multi-minute lag
+
+Investigation and proper root-cause fixes for debloat cleaning taking ~2+ minutes:
+
+1. Task Scheduler Priority 7 throttled background I/O:
+   `register_and_run_ti_child` in `ffi_tasksched.rs` did not configure task priority.
+   Task Scheduler defaults to priority 7 (`BELOW_NORMAL_PRIORITY_CLASS` with
+   `THREAD_MODE_BACKGROUND_BEGIN` / `IO_PRIORITY_LOW`), causing file deletion and
+   scans to be heavily throttled behind Defender real-time scans and OS I/O.
+   Explicitly set priority to 4 (`NORMAL_PRIORITY_CLASS`).
+2. `schtasks.exe /Query /FO CSV /NH` process execution bottleneck:
+   `handle_scheduled_tasks` in `actions.rs` invoked CLI `schtasks.exe` to query all
+   system tasks, taking 29+ seconds on standard Windows installations. Implemented
+   direct COM `ITaskFolder` recursive enumeration (`TiSession::enumerate_all_task_paths`
+   in `ffi_tasksched.rs`), reducing task enumeration time to <0.3s (~100x faster),
+   with fallback to `schtasks.exe` (reduced 30s timeout).
+3. Broken `%SystemDrive%\Users` path joining in discovery:
+   `sys_drive` ("C:") was joined as `PathBuf::from("C:").join("Users")`, producing
+   `"C:Users"` (drive-relative path resolved against CWD rather than absolute `"C:\Users"`).
+   Fixed to properly format absolute root prefix.
+4. Redundant syscalls during directory discovery:
+   `discover_candidates` called `path_kind_no_follow` (metadata/symlink probe) on every
+   single entry in large search roots before checking if the path matched any component.
+   Reordered so `match_component_for_path` filters first; metadata is only probed
+   for candidate matches.
+5. Mutex abandonment & 30s lock delay:
+   `create_global_mutex` created mutexes with initial ownership; `try_acquire_named_mutex`
+   closed handles without calling `ReleaseMutex`, abandoning mutexes and blocking subsequent
+   acquisitions up to `WAIT_GRACE_MS` (30s). Replaced with RAII `NamedMutexLock` calling
+   `ReleaseMutex` on drop and handling `WAIT_ABANDONED_0`. Reduced timeout to 5s.
+6. Silent parent wait & live child log streaming:
+   Parent process waiting on the background SYSTEM scheduled task previously showed only
+   periodic "Still waiting for TI child..." every 15s. Implemented live log streaming
+   (`stream_child_log_lines` in `tasksched.rs`) from the shared run log to the console
+   at 300ms intervals, giving real-time progress feedback to the user.
+
 ## 2026-08-27 — Full-repo audit pass 3: root-reparse traversal fix + abort-aware TI wait
 
 Template audit of the entire repo (Rust primary line-by-line, build/wrapper/

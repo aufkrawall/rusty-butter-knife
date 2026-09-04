@@ -66,17 +66,13 @@ pub fn get_existing_roots() -> Vec<PathBuf> {
     }
 
     // Use %SystemDrive% instead of hardcoding C:.
-    let sys_drive = std::env::var("SystemDrive")
-        .unwrap_or_else(|_| "C:".to_string())
-        .chars()
-        .take(2)
-        .collect::<String>();
-    let users = PathBuf::from(if sys_drive.len() == 2 {
-        sys_drive
+    let sys_drive = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".to_string());
+    let sys_drive_prefix = if sys_drive.len() >= 2 && sys_drive.as_bytes()[1] == b':' {
+        &sys_drive[..2]
     } else {
-        "C:".to_string()
-    })
-    .join("Users");
+        "C:"
+    };
+    let users = PathBuf::from(format!(r"{sys_drive_prefix}\Users"));
     if let Ok(entries) = std::fs::read_dir(&users) {
         for entry in entries.flatten() {
             let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
@@ -179,15 +175,15 @@ pub fn discover_candidates(enabled: &crate::app::EnabledMap) {
     let mut seen: HashSet<String> = HashSet::new();
 
     let mut process_path = |p: &Path| {
+        let Some(comp) = match_component_for_path(p, enabled) else {
+            return;
+        };
         // No-follow kind so a junction surface is recorded as its own entry
         // without claiming directory semantics of its TARGET.
         let is_dir = matches!(
             crate::fsutil::path_kind_no_follow(p),
             Ok(crate::fsutil::PathKind::Directory)
         );
-        let Some(comp) = match_component_for_path(p, enabled) else {
-            return;
-        };
         let canon_key = {
             let canon = p.canonicalize().map(|c| path_lower(&c)).unwrap_or_default();
             if canon.is_empty() {

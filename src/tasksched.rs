@@ -252,13 +252,19 @@ pub fn attempt_trusted_installer_relaunch() -> TiRelaunchResult {
         "Task launched. Waiting for the SYSTEM worker to finish (exit code via LastTaskResult).",
     );
 
+    let log_path = app::run(|s| s.log_path.clone());
+    let mut log_cursor = std::fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
+
     // Wait for task completion; the exit code comes from LastTaskResult.
-    let mut waited: i64 = 0;
+    let start_time = std::time::Instant::now();
+    let mut silence_start = std::time::Instant::now();
     let start_grace: i64 = 60; // seconds to allow the task to enter Running at all
     let mut saw_running = false;
     let mut timed_out = true;
 
-    while waited < opts.ti_wait_seconds {
+    while (start_time.elapsed().as_secs() as i64) < opts.ti_wait_seconds {
+        let waited = start_time.elapsed().as_secs() as i64;
+
         // Cancellation checkpoint (parity with the UAC wait and subprocess
         // capture): a Ctrl+C request must escape this loop promptly instead
         // of riding out up to ti_wait_seconds. finish_task() below stops and
@@ -273,6 +279,12 @@ pub fn attempt_trusted_installer_relaunch() -> TiRelaunchResult {
             timed_out = false;
             break;
         }
+
+        let lines_streamed = stream_child_log_lines(&log_path, &mut log_cursor, false);
+        if lines_streamed > 0 {
+            silence_start = std::time::Instant::now();
+        }
+
         let polled = registered.poll_state();
         let (state_running, state_queued) = match polled {
             Some(TiState::Running) => {
@@ -294,6 +306,7 @@ pub fn attempt_trusted_installer_relaunch() -> TiRelaunchResult {
         ) {
             PollDecision::KeepWaiting => {}
             PollDecision::Finished(exit_code) => {
+                let _ = stream_child_log_lines(&log_path, &mut log_cursor, true);
                 res.child_status_seen = true;
                 res.child_exit_code = exit_code;
                 res.child_succeeded = exit_code == 0;
@@ -306,6 +319,7 @@ pub fn attempt_trusted_installer_relaunch() -> TiRelaunchResult {
                 break;
             }
             PollDecision::NeverStarted => {
+                let _ = stream_child_log_lines(&log_path, &mut log_cursor, true);
                 log_line(
                     "ERROR",
                     &format!(
@@ -318,24 +332,27 @@ pub fn attempt_trusted_installer_relaunch() -> TiRelaunchResult {
             }
         }
 
-        if waited > 0 && waited % 15 == 0 {
+        if silence_start.elapsed().as_secs() >= 15 {
             log_line(
                 "INFO",
                 &format!("Still waiting for TI child... ({waited}s)"),
             );
+            log_cursor = std::fs::metadata(&log_path).map(|m| m.len()).unwrap_or(log_cursor);
+            silence_start = std::time::Instant::now();
         }
-        // Abort-aware 3 s wait in short slices so the checkpoint above
-        // reacts promptly; this is a cancellation checkpoint, not a delay.
-        for _ in 0..10 {
+
+        // Abort-aware 300 ms wait in short slices so streaming stays responsive
+        // and cancellation checkpoints react promptly.
+        for _ in 0..3 {
             if app::ABORT_REQUESTED.load(std::sync::atomic::Ordering::SeqCst) {
                 break;
             }
-            std::thread::sleep(Duration::from_millis(300));
+            std::thread::sleep(Duration::from_millis(100));
         }
-        waited += 3;
     }
 
     if timed_out {
+        let _ = stream_child_log_lines(&log_path, &mut log_cursor, true);
         log_line(
             "ERROR",
             &format!(
@@ -348,6 +365,71 @@ pub fn attempt_trusted_installer_relaunch() -> TiRelaunchResult {
 
     session.finish_task(&registered, &task_name);
     res
+}
+
+fn parse_log_level(line: &str) -> &str {
+    if let Some(rest) = line.strip_prefix('[') {
+        if let Some(idx) = rest.find("] [") {
+            let after = &rest[idx + 3..];
+            if let Some(end_idx) = after.find(']') {
+                return &after[..end_idx];
+            }
+        }
+    }
+    "INFO"
+}
+
+fn stream_child_log_lines(
+    log_path: &std::path::Path,
+    cursor: &mut u64,
+    flush: bool,
+) -> usize {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = match std::fs::File::open(log_path) {
+        Ok(f) => f,
+        Err(_) => return 0,
+    };
+    let Ok(current_len) = file.seek(SeekFrom::End(0)) else {
+        return 0;
+    };
+    if current_len < *cursor {
+        *cursor = 0;
+    }
+    if current_len <= *cursor {
+        return 0;
+    }
+    if file.seek(SeekFrom::Start(*cursor)).is_err() {
+        return 0;
+    }
+    let to_read = (current_len - *cursor) as usize;
+    let mut buf = vec![0u8; to_read];
+    let Ok(n) = file.read(&mut buf) else {
+        return 0;
+    };
+    if n == 0 {
+        return 0;
+    }
+    let valid_len = if flush {
+        n
+    } else {
+        match buf[..n].iter().rposition(|&b| b == b'\n') {
+            Some(pos) => pos + 1,
+            None => return 0,
+        }
+    };
+    *cursor += valid_len as u64;
+    let text = String::from_utf8_lossy(&buf[..valid_len]);
+    let mut line_count = 0;
+    let colored = !crate::logging::no_color();
+    for line in text.lines() {
+        let level = parse_log_level(line);
+        let color = crate::logging::color_for_level(level);
+        crate::console::set_color(color, colored);
+        crate::console::out(&format!("{line}\n"));
+        crate::console::set_color(crate::console::COLOR_WHITE, colored);
+        line_count += 1;
+    }
+    line_count
 }
 
 fn ffi_task_id() -> u32 {
@@ -405,5 +487,44 @@ mod tests {
             ti_poll_decision(false, false, true, None, 10, 60),
             PollDecision::KeepWaiting
         );
+    }
+
+    #[test]
+    fn test_parse_log_level() {
+        assert_eq!(parse_log_level("[2026-09-04 07:24:44] [INFO] Task registered"), "INFO");
+        assert_eq!(parse_log_level("[2026-09-04 07:24:44] [ERROR] Something failed"), "ERROR");
+        assert_eq!(parse_log_level("[2026-09-04 07:24:44] [WARN] Warning message"), "WARN");
+        assert_eq!(parse_log_level("[2026-09-04 07:24:44] [DRYRUN] Would delete"), "DRYRUN");
+        assert_eq!(parse_log_level("[2026-09-04 07:24:44] [DELETED] File deleted"), "DELETED");
+        assert_eq!(parse_log_level("Plain line without brackets"), "INFO");
+    }
+
+    #[test]
+    fn test_stream_child_log_lines() {
+        let temp = std::env::temp_dir().join(format!("test_stream_{}.log", std::process::id()));
+        let _ = std::fs::remove_file(&temp);
+        let mut cursor = 0u64;
+
+        std::fs::write(&temp, "line 1\nline 2\npartial").unwrap();
+        let count = stream_child_log_lines(&temp, &mut cursor, false);
+        assert_eq!(count, 2);
+        assert_eq!(cursor, 14);
+
+        // Append rest of partial line + new line
+        let mut f = std::fs::OpenOptions::new().append(true).open(&temp).unwrap();
+        use std::io::Write;
+        f.write_all(b" finished\nline 3\n").unwrap();
+        drop(f);
+
+        let count = stream_child_log_lines(&temp, &mut cursor, false);
+        assert_eq!(count, 2);
+
+        // Test flush on trailing partial line
+        std::fs::write(&temp, "trailing partial").unwrap();
+        let mut cursor2 = 0u64;
+        let count_flush = stream_child_log_lines(&temp, &mut cursor2, true);
+        assert_eq!(count_flush, 1);
+
+        let _ = std::fs::remove_file(&temp);
     }
 }

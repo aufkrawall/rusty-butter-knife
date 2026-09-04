@@ -423,52 +423,67 @@ pub fn handle_scheduled_tasks(enabled: &crate::app::EnabledMap) {
         return;
     }
 
-    let schtasks = match system_dir_file("schtasks.exe") {
-        Ok(p) => p,
-        Err(e) => {
-            log_line("ERROR", &format!("Scheduled task handling skipped: {e}"));
-            return;
+    let task_names: Vec<String> = {
+        // Fast path: direct COM Task Scheduler enumeration (instantaneous; avoids slow schtasks query).
+        let com_tasks = ffi::TiSession::connect()
+            .map(|s| s.enumerate_all_task_paths())
+            .unwrap_or_default();
+        if !com_tasks.is_empty() {
+            com_tasks
+        } else {
+            let schtasks = match system_dir_file("schtasks.exe") {
+                Ok(p) => p,
+                Err(e) => {
+                    log_line("ERROR", &format!("Scheduled task handling skipped: {e}"));
+                    return;
+                }
+            };
+            let res = run_process_capture(
+                &join_command(&[
+                    schtasks,
+                    "/Query".into(),
+                    "/FO".into(),
+                    "CSV".into(),
+                    "/NH".into(),
+                ]),
+                30_000,
+            );
+            if res.exit_code != 0 {
+                log_line(
+                    "WARN",
+                    &format!("schtasks query failed: {}", trim(&res.output)),
+                );
+                return;
+            }
+            let mut list = Vec::new();
+            for raw_line in res.output.lines() {
+                let line = trim(raw_line);
+                if line.is_empty() {
+                    continue;
+                }
+                let fields = parse_csv_line(&line);
+                if fields.is_empty() {
+                    continue;
+                }
+                let mut task_name = String::new();
+                for f in &fields {
+                    if f.starts_with('\\') {
+                        task_name = f.clone();
+                        break;
+                    }
+                }
+                if task_name.is_empty() {
+                    task_name = fields[0].clone();
+                }
+                list.push(task_name);
+            }
+            list
         }
     };
-    let res = run_process_capture(
-        &join_command(&[
-            schtasks.clone(),
-            "/Query".into(),
-            "/FO".into(),
-            "CSV".into(),
-            "/NH".into(),
-        ]),
-        120_000,
-    );
-    if res.exit_code != 0 {
-        log_line(
-            "WARN",
-            &format!("schtasks query failed: {}", trim(&res.output)),
-        );
-        return;
-    }
 
-    for raw_line in res.output.lines() {
-        let line = trim(raw_line);
-        if line.is_empty() {
-            continue;
-        }
-        let fields = parse_csv_line(&line);
-        if fields.is_empty() {
-            continue;
-        }
-        // The task-name column position varies between schtasks versions;
-        // select the field that looks like an absolute task path ('\Foo').
-        let mut task_name = String::new();
-        for f in &fields {
-            if f.starts_with('\\') {
-                task_name = f.clone();
-                break;
-            }
-        }
-        if task_name.is_empty() {
-            task_name = fields[0].clone();
-        }
+    let schtasks = system_dir_file("schtasks.exe").ok();
+
+    for task_name in task_names {
         let component = match task_action_decision(&task_name, enabled) {
             ActionDecision::Allowed(c) => c,
             ActionDecision::ComponentDisabled(c) => {
@@ -487,7 +502,7 @@ pub fn handle_scheduled_tasks(enabled: &crate::app::EnabledMap) {
         if delete_tasks {
             if !execute {
                 log_action("DeleteTask", "DRYRUN", &component.key, &task_name, "");
-            } else {
+            } else if let Some(ref schtasks) = schtasks {
                 let del = run_process_capture(
                     &join_command(&[
                         schtasks.clone(),
@@ -509,7 +524,7 @@ pub fn handle_scheduled_tasks(enabled: &crate::app::EnabledMap) {
         } else if disable_tasks {
             if !execute {
                 log_action("DisableTask", "DRYRUN", &component.key, &task_name, "");
-            } else {
+            } else if let Some(ref schtasks) = schtasks {
                 let dis = run_process_capture(
                     &join_command(&[
                         schtasks.clone(),
