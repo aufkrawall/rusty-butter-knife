@@ -1,4 +1,4 @@
-# GreenPostInstallDebloatNative
+# Rusty Butter Knife
 
 **WARNING: THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.**
 
@@ -47,20 +47,20 @@ CaptureSDK are **not** enabled (use their `--include-*` flags to activate).
 python build.py
 ```
 
-By default this builds the **primary Rust build** into `dist/rust-<arch>/`. It drives `cargo build --release`; you need Python 3 and Rust with the MSVC toolchain ([rustup](https://rustup.rs), `x86_64-pc-windows-msvc`).
+or directly using Cargo:
 
-The legacy C++17 translation unit is kept as **reference code**. It is no longer built by default; build it explicitly with `--variant cpp` (downloads a statically-linked LLVM/MinGW toolchain into `mingw64/` on first use) or build both legs with `--variant all`.
+```powershell
+cargo build --release
+```
 
-Every produced binary's PE machine type is verified against the requested architecture before it lands in `dist/`, so a cross-build can never silently produce the wrong architecture.
+Builds `RustyButterKnife.exe` using Rust with the MSVC toolchain ([rustup](https://rustup.rs), `x86_64-pc-windows-msvc`). Every produced binary's PE machine type is verified against the requested architecture before it lands in `dist/`, so a cross-build can never silently produce the wrong architecture. In addition, `build.py` automatically injects compiler path remapping so host usernames and local workspace paths are never baked into release binaries.
 
 Options:
 
 | Option | Description |
 |--------|-------------|
-| `--variant {all,cpp,rust}` | Which variant(s) to build (default: `rust`). |
-| `--arch aarch64` | Cross-compile for Windows-on-ARM64 (each variant writes to its own `dist/<variant>-<arch>/` folder). The Rust ARM64 leg requires the matching rustup target (`aarch64-pc-windows-msvc`). |
-| `--sha256 <hex>` | Override the built-in pinned SHA256 of the downloaded toolchain archive (the pin is verified automatically; override only when deliberately switching archives). |
-| `--clean` | Remove `mingw64/`, `_extract/`, any cached archive and `dist/`. |
+| `--arch aarch64` | Cross-compile for Windows-on-ARM64 into `dist/<arch>/`. Requires the matching rustup target (`aarch64-pc-windows-msvc`). |
+| `--clean` | Remove `target/` and `dist/`. |
 
 ---
 
@@ -69,7 +69,7 @@ Options:
 ### 1. Interactive menu (default)
 
 ```
-GreenPostInstallDebloatNative.exe
+RustyButterKnife.exe
 ```
 
 A bare launch (e.g. double-click in Explorer) opens the wizard with the
@@ -95,7 +95,7 @@ the elevated TrustedInstaller child.
 ### 2. Dry-run (safe, does nothing)
 
 ```
-GreenPostInstallDebloatNative.exe --dry-run
+RustyButterKnife.exe --dry-run
 ```
 
 ### 3. Full cleanup
@@ -103,7 +103,7 @@ GreenPostInstallDebloatNative.exe --dry-run
 Run as Administrator:
 
 ```
-GreenPostInstallDebloatNative.exe --execute --kill-lockers --disable-services --delete-scheduled-tasks --schedule-reboot-delete
+RustyButterKnife.exe --execute --kill-lockers --disable-services --delete-scheduled-tasks --schedule-reboot-delete
 ```
 
 This will attempt a TrustedInstaller-level relaunch via the Task Scheduler COM
@@ -115,15 +115,15 @@ Scheduler (`LastTaskResult`); failures propagate via exit codes 10 and 11.
 
 ### PowerShell wrapper
 
-`Run-GreenPostInstallDebloat.ps1` elevates itself, runs the full cleanup shown
+`Run-RustyButterKnife.ps1` elevates itself, runs the full cleanup shown
 above and keeps its window open afterwards so results stay visible. Extra
 arguments are passed through:
 
 ```powershell
-.\Run-GreenPostInstallDebloat.ps1 --include-ngx --no-color
+.\Run-RustyButterKnife.ps1 --include-ngx --no-color
 ```
 
-Set `$env:GPD_NO_PAUSE = 1` when automating.
+Set `$env:RBK_NO_PAUSE = 1` (or legacy `$env:GPD_NO_PAUSE = 1`) when automating.
 
 ---
 
@@ -222,9 +222,8 @@ Set `$env:GPD_NO_PAUSE = 1` when automating.
   orphaned scheduled tasks) are swept automatically at relaunch time.
 - The elevated task is registered with a 2-hour execution time limit so a
   runaway child cannot linger for days.
-- The llvm-mingw toolchain archive is verified against a pinned SHA256
-  digest on every download, so a tampered or corrupted toolchain is rejected
-  before it is ever executed.
+- Built binaries employ compiler path remapping (`--remap-path-prefix`) so
+  build environments and host usernames are never leaked in released binaries.
 
 ---
 

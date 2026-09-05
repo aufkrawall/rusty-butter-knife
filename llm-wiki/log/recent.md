@@ -1,3 +1,12 @@
+## 2026-09-05 — Project rename to "Rusty Butter Knife", dropped C++, v2.0.0
+
+- Renamed project from GreenPostInstallDebloatNative to "Rusty Butter Knife".
+- Crate: `rusty-butter-knife`, binary: `RustyButterKnife.exe`, version `2.0.0`.
+- Dropped legacy C++ translation unit (`GreenPostInstallDebloatNative.cpp`) and llvm-mingw dependency.
+- Streamlined `build.py` for pure Rust release builds; added automatic privacy-preserving path remapping (`--remap-path-prefix`) to guarantee that local developer paths and usernames are never baked into release binaries.
+- Renamed PowerShell wrapper to `Run-RustyButterKnife.ps1` with fallback checks.
+- Renamed execution and log mutexes to `Global\RustyButterKnife_Execute_Mutex` and `Global\RustyButterKnife_LogMutex`.
+
 ## 2026-09-05 — Full-codebase polyglot hardened audit & quality improvements
 
 Full repository audit (all Rust modules, legacy C++, build system, PowerShell wrapper,

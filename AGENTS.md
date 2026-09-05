@@ -7,45 +7,38 @@ Copyright (c) 2026 aufkrawall
 
 ## Critical workflow
 
-- **Platform/toolchain baseline:** Windows 10/11 host with Python 3 available.
-  The only compiler path is `python build.py`, which uses a pinned llvm-mingw
-  toolchain (version constant in `build.py`) auto-downloaded into `mingw64/`,
-  falling back to a system `clang++` if download/extraction fails. There is no
-  Visual Studio project and no MSVC support implied. Shell is PowerShell/cmd;
-  git is configured with LF line endings (`core.autocrlf=input`).
+- **Platform/toolchain baseline:** Windows 10/11 host with Rust (MSVC toolchain)
+  and Python 3 available. The primary build is `cargo build --release` or
+  `python build.py`. Shell is PowerShell/cmd; git is configured with LF line
+  endings (`core.autocrlf=input`).
 - **DANGER — this is a destructive system tool.** The program deletes files,
   disables/deletes services and scheduled tasks on real NVIDIA installations.
   During development/verification, ONLY ever run it with safe flags:
   `--dry-run`, `--list-components`, `--help`. Never invoke `--execute`,
   `--kill-lockers`, the PowerShell wrapper, or a bare launch (which opens the
   wizard preselected for destructive mode).
-- **Default development loop:** `python build.py` compiles the legacy C++ in
-  seconds; the primary implementation is now the **Rust crate** at the repo
-  root — its loop is `cargo build` (single-digit seconds). Stay in this loop
-  while iterating; do not run extra verification after every small edit.
+- **Default development loop:** Pure **Rust crate** at the repo root —
+  its loop is `cargo build` (single-digit seconds). Stay in this loop while
+  iterating; do not run extra verification after every small edit.
 - **Then close with exactly ONE gate.**
-  - Rust (primary): `cargo build` + `cargo clippy --all-targets -- -D warnings`
+  - Rust: `cargo build` + `cargo clippy --all-targets -- -D warnings`
     + `cargo test --all-targets`, zero failures. When behavior changed, one
     safe smoke run:
-    `./target/release/GreenPostInstallDebloatNative.exe --list-components`
+    `./target/release/RustyButterKnife.exe --list-components`
     and/or `--dry-run` under a timeout (writes a gitignored log beside the
     binary).
-  - Legacy C++: `python build.py`, warning-free; only when touching the
-    legacy `.cpp`.
   - Change touching CLI flags/help text -> additionally diff `--help` output
     against the flag table in `README.md` and update the README if they drift.
 - What the gate does NOT cover: there is no CI, no sanitizers, and execute-
   mode regression must run only on sacrificial VMs. `cargo test --all-targets`
-  is part of the gate (51 tests incl. real-Windows integration tests); pure
-  compiler warnings remain the first-line regression net.
-- No lint/static-analysis ratchet exists. Fix any new warning introduced by a
-  change; `-Wall -Wextra` cleanliness is part of the gate.
+  is part of the gate (51+ tests incl. real-Windows integration tests); compiler
+  and clippy cleanliness remain the first-line regression net.
+- Fix any new warning introduced by a change; warning-free code is part of
+  the gate.
 - No fuzzing stage exists.
-- Release process: none scripted. Built binaries (`*.exe`), archives (`*.7z`)
-  and logs are deliberately NOT committed (see `.gitignore`). Bump
-  `GPD_VERSION` in `GreenPostInstallDebloatNative.cpp` when the user asks for
-  a version bump; keep the header comment block at the top of the source in
-  sync with user-visible behavior changes.
+- Release process: built binaries (`*.exe`), archives (`*.7z`) and logs are
+  deliberately NOT committed (see `.gitignore`). Bump version in `Cargo.toml`
+  and `RBK_VERSION` in `src/app.rs` when the user asks for a version bump.
 - Prefer explicit flags over interactive runs for agent sessions. A bare
   launch blocks forever waiting on wizard input — under an agent harness that
   is a hang; always pass flags and use timeouts.
@@ -95,12 +88,10 @@ Copyright (c) 2026 aufkrawall
   fail-closed direction: when in doubt, do NOT match a path for deletion.
   Whole DriverStore package roots stay undeletable; only allow-listed
   subfolders may be removed recursively.
-- **Source-file size discipline:** source-code files (Rust modules going
-  forward; build scripts included) must stay within roughly **500–800
-  lines**. Split proactively when a file approaches the ceiling — split
-  along the existing section boundaries rather than artificially. Wiki/
-  docs pages are exempt; the legacy `GreenPostInstallDebloatNative.cpp`
-  is grandfathered as historical reference and must not grow.
+- **Source-file size discipline:** source-code files (Rust modules, build
+  scripts included) must stay within roughly **500–800 lines**. Split
+  proactively when a file approaches the ceiling — split along the existing
+  section boundaries rather than artificially. Wiki/docs pages are exempt.
 - Treat logs, dumps, media, captures, credentials, private keys, tokens,
   and user data as sensitive.
 - Do not commit secrets, dumps, logs, captures, large generated artifacts,
@@ -138,11 +129,10 @@ Copyright (c) 2026 aufkrawall
 
 | Tool | Purpose | Installed/default path |
 | --- | --- | --- |
-| `GreenPostInstallDebloatNative.exe --dry-run` | Safe end-to-end scan: exercises discovery/matching and writes the full report without deleting anything | repo root; build first |
-| `GreenPostInstallDebloatNative.exe --list-components` | Prints component keys/default states; fast CLI-parse sanity check | repo root |
+| `RustyButterKnife.exe --dry-run` | Safe end-to-end scan: exercises discovery/matching and writes the full report without deleting anything | repo root; build first |
+| `RustyButterKnife.exe --list-components` | Prints component keys/default states; fast CLI-parse sanity check | repo root |
 | `debloat-YYYYMMDD-HHMMSS.log` | One file per run: progress, actions, candidates list, post-run existence check, JSON report block | beside the `.exe`; override with `--log-file PATH` / `--log-dir PATH` |
 | `schtasks.exe`, `takeown.exe`, `icacls.exe` | Invoked by the tool itself; always resolved from `%SystemRoot%\System32` by absolute path (never PATH) | `%SystemRoot%\System32` |
-| `clang++` warnings (`-Wall -Wextra`) | The only static analysis configured | bundled `mingw64/bin/clang++.exe` |
 
 ## `llm-wiki/` workflow
 

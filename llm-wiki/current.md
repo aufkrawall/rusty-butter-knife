@@ -1,15 +1,15 @@
 # Current State
 
-Last cross-checked: 2026-08-27 (audit pass 3: root-reparse fix + abort-aware
-TI wait; GPD_VERSION 1.5.0)
+Last cross-checked: 2026-09-05 (rename to Rusty Butter Knife, dropped C++, v2.0.0)
 
 ## Summary
 
-- Native Windows NVIDIA post-install debloater. PRIMARY: Rust crate at repo
-  root (`src/`, 51 unit/integration tests, clippy-clean, unsafe confined to
-  the `ffi*` module family). LEGACY: C++17 single TU kept as REFERENCE code;
-  `python build.py` builds only the Rust leg by default (`--variant cpp|all`
-  builds it); both legs are PE-machine-type verified per architecture.
+- Native Windows NVIDIA driver post-install debloater. Pure Rust crate at repo
+  root (`src/`, 57 unit/integration tests, clippy-clean, unsafe confined to
+  the `ffi*` module family). C++ legacy version dropped completely.
+  `python build.py` or `cargo build --release` builds `RustyButterKnife.exe`
+  with PE-machine verification and compiler path remapping (`--remap-path-prefix`)
+  to guarantee zero build-path or username leakage.
 - Destructive system tool: dry-run by default; destructive execution needs
   TrustedInstaller relaunch (scheduled-task COM) or explicit fallback flags,
   interactive EXECUTE confirmation, a single-instance mutex, and a writable

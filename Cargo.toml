@@ -1,12 +1,12 @@
 [package]
-name = "green-post-install-debloat-native"
-version = "1.5.0"
+name = "rusty-butter-knife"
+version = "2.0.0"
 edition = "2021"
-description = "Native Windows NVIDIA post-install debloater (Rust port)"
+description = "Native Windows NVIDIA driver post-install debloater"
 license = "MIT"
 
 [[bin]]
-name = "GreenPostInstallDebloatNative"
+name = "RustyButterKnife"
 path = "src/main.rs"
 
 [dependencies]

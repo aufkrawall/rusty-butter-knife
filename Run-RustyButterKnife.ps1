@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 param(
-    # Extra arguments passed through to GreenPostInstallDebloatNative.exe,
-    # e.g.: .\Run-GreenPostInstallDebloat.ps1 --include-ngx --no-color
+    # Extra arguments passed through to RustyButterKnife.exe,
+    # e.g.: .\Run-RustyButterKnife.ps1 --include-ngx --no-color
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$PassthroughArgs
 )
@@ -51,10 +51,11 @@ if (-not $isAdministrator) {
 }
 
 $candidatePaths = @(
+    (Join-Path $PSScriptRoot 'RustyButterKnife.exe')
+    (Join-Path $PSScriptRoot 'dist\x86_64\RustyButterKnife.exe')
+    (Join-Path $PSScriptRoot 'dist\aarch64\RustyButterKnife.exe')
+    (Join-Path $PSScriptRoot 'target\release\RustyButterKnife.exe')
     (Join-Path $PSScriptRoot 'GreenPostInstallDebloatNative.exe')
-    (Join-Path $PSScriptRoot 'dist\rust-x86_64\GreenPostInstallDebloatNative.exe')
-    (Join-Path $PSScriptRoot 'dist\rust-aarch64\GreenPostInstallDebloatNative.exe')
-    (Join-Path $PSScriptRoot 'target\release\GreenPostInstallDebloatNative.exe')
 )
 
 $executable = $candidatePaths | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
@@ -82,11 +83,11 @@ $process = Start-Process `
     -Wait `
     -PassThru
 
-Write-Host ("GreenPostInstallDebloatNative finished with exit code {0}." -f $process.ExitCode)
+Write-Host ("Rusty Butter Knife finished with exit code {0}." -f $process.ExitCode)
 
 # The elevated console would close immediately otherwise, hiding the results.
-# Set GPD_NO_PAUSE=1 to skip this when automating.
-if ([Environment]::UserInteractive -and -not $env:GPD_NO_PAUSE) {
+# Set RBK_NO_PAUSE=1 (or legacy GPD_NO_PAUSE=1) to skip this when automating.
+if ([Environment]::UserInteractive -and -not $env:RBK_NO_PAUSE -and -not $env:GPD_NO_PAUSE) {
     Read-Host 'Press Enter to close' | Out-Null
 }
 

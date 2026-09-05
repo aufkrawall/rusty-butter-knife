@@ -12,7 +12,8 @@ use std::sync::Mutex;
 
 use crate::types::{Options, RunState};
 
-pub const GPD_VERSION: &str = "1.5.0";
+pub const RBK_VERSION: &str = "2.0.0";
+pub const GPD_VERSION: &str = RBK_VERSION;
 
 /// Scheduled-task name prefix for TrustedInstaller relaunch artifacts.
 pub const K_TI_TASK_PREFIX: &str = "NvDebloatTI-";

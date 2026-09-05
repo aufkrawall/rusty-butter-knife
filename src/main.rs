@@ -106,8 +106,8 @@ fn wmain_try(args: &[String]) -> Result<i32, String> {
     }
     if opts.show_version {
         console::out(&format!(
-            "GreenPostInstallDebloatNative version {}\n",
-            app::GPD_VERSION
+            "Rusty Butter Knife version {}\n",
+            app::RBK_VERSION
         ));
         return Ok(EXIT_OK);
     }
@@ -219,7 +219,7 @@ fn wmain_try(args: &[String]) -> Result<i32, String> {
     // services and pending-reboot registrations.
     let _mutex_guard = if app::opts(|o| o.execute && !o.ti_child) {
         let (guard, existed) =
-            ffi::create_global_mutex("Global\\GreenPostInstallDebloatNative_Execute_Mutex");
+            ffi::create_global_mutex("Global\\RustyButterKnife_Execute_Mutex");
         if !guard.held() {
             // Fail closed: without the mutex, concurrent destructive runs
             // would race over files, services and pending-reboot

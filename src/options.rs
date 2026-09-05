@@ -10,16 +10,16 @@ use crate::util::{atoi_prefix, to_lower};
 /// Port of `printUsage` (text kept byte-identical; build tag updated to Rust).
 pub fn print_usage() {
     let text = format!(
-        "\nNVIDIA post-install debloater native Rust build (version {})\n\n\
+        "\nRusty Butter Knife — NVIDIA driver post-install debloater (version {})\n\n\
 Usage:\n\
-  GreenPostInstallDebloatNative.exe                      Bare launch (double-click): wizard with recommended\n\
+  RustyButterKnife.exe                                   Bare launch (double-click): wizard with recommended\n\
                                                          defaults pre-selected (execute, kill-lockers, disable-services,\n\
                                                          delete-scheduled-tasks, reboot-delete); keeps the\n\
                                                          NVIDIA profile updater installed. Requires interactive\n\
                                                          confirmation; elevates via UAC when needed.\n\
-  GreenPostInstallDebloatNative.exe --menu               Interactive wizard with inert dry-run defaults.\n\
-  GreenPostInstallDebloatNative.exe --dry-run            Safe scan without changes.\n\
-  GreenPostInstallDebloatNative.exe --execute --kill-lockers --disable-services --delete-scheduled-tasks --schedule-reboot-delete\n\n\
+  RustyButterKnife.exe --menu                            Interactive wizard with inert dry-run defaults.\n\
+  RustyButterKnife.exe --dry-run                         Safe scan without changes.\n\
+  RustyButterKnife.exe --execute --kill-lockers --disable-services --delete-scheduled-tasks --schedule-reboot-delete\n\n\
 Core switches:\n\
   --execute                       Actually delete/disable. Default is dry-run.\n\
                                   Exception: a bare launch (no arguments) opens the wizard\n\
@@ -65,7 +65,7 @@ Exit codes:\n\
   0 success | 1 fatal exception | 2 unknown fatal | 3 aborted by user\n\
   10 TrustedInstaller relaunch failed/not permitted | 11 elevated child reported failure\n\
   12 another execute-mode instance is already running | 13 invalid or unknown argument\n\n",
-        crate::app::GPD_VERSION
+        crate::app::RBK_VERSION
     );
     console::out(&text);
 }

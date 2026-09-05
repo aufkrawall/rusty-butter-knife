@@ -5,10 +5,9 @@ log/recent.md)
 
 Primary sources:
 - `AGENTS.md`
-- `GreenPostInstallDebloatNative.cpp` (the entire product: single ~2500-line
-  C++17 translation unit)
-- `build.py` (toolchain bootstrap + compile driver)
-- `Run-GreenPostInstallDebloat.ps1` (elevation wrapper)
+- `src/` (the entire product: native Rust crate)
+- `build.py` (Rust release build driver with path-remapping and PE verification)
+- `Run-RustyButterKnife.ps1` (elevation wrapper)
 - `README.md` (user-facing flags/exit codes/safety docs — must stay in sync
   with the CLI)
 

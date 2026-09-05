@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// Named mutex serializing large multi-line appends (candidates list,
 /// reports) across all processes of a run so they cannot interleave in the
 /// single shared log.
-pub const K_LOG_MUTEX_NAME: &str = "Global\\GreenPostInstallDebloatNative_LogMutex";
+pub const K_LOG_MUTEX_NAME: &str = "Global\\RustyButterKnife_LogMutex";
 
 static APPEND_FAILURE_REPORTED: AtomicBool = AtomicBool::new(false);
 
