@@ -72,6 +72,8 @@ Options:
 RustyButterKnife.exe
 ```
 
+![Rusty Butter Knife interactive menu](assets/screenshot.png)
+
 A bare launch (e.g. double-click in Explorer) opens the wizard with the
 recommended cleanup pre-selected:
 
