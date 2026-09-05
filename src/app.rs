@@ -18,7 +18,7 @@ pub const GPD_VERSION: &str = RBK_VERSION;
 /// Scheduled-task name prefix for TrustedInstaller relaunch artifacts.
 pub const K_TI_TASK_PREFIX: &str = "NvDebloatTI-";
 
-// Exit codes (contract surface: PowerShell wrapper + parent/child handoff).
+// Exit codes (contract surface: CLI callers + parent/child handoff).
 pub const EXIT_OK: i32 = 0;
 pub const EXIT_FATAL_EXCEPTION: i32 = 1;
 pub const EXIT_FATAL_UNKNOWN: i32 = 2;

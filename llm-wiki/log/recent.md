@@ -1,3 +1,9 @@
+## 2026-09-05 — Removed legacy PowerShell wrapper & completed audit handoff report
+
+- Removed legacy `Run-RustyButterKnife.ps1` (native executable handles self-elevation directly).
+- Removed completed historical document `Rusty Butter Knife — Audit Handoff Summary.md`.
+- Updated `README.md`, `AGENTS.md`, `llm-wiki/index.md`, and `llm-wiki/repo-map.md`.
+
 ## 2026-09-05 — Project rename to "Rusty Butter Knife", dropped C++, v2.0.0
 
 - Renamed project from GreenPostInstallDebloatNative to "Rusty Butter Knife".

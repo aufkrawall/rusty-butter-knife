@@ -7,7 +7,6 @@ Primary sources:
 - `AGENTS.md`
 - `src/` (the entire product: native Rust crate)
 - `build.py` (Rust release build driver with path-remapping and PE verification)
-- `Run-RustyButterKnife.ps1` (elevation wrapper)
 - `README.md` (user-facing flags/exit codes/safety docs — must stay in sync
   with the CLI)
 

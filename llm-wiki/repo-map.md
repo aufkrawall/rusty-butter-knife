@@ -102,9 +102,6 @@ anchors; the file is a single translation unit).
   -municode -O2 -Wall -Wextra -static`; targets are EXPLICIT per arch:
   `--target=x86_64-w64-mingw32` / `--target=aarch64-w64-mingw32` for C++, and
   msvc triples for Rust (x86_64-pc-windows-msvc / aarch64-pc-windows-msvc).
-- `Run-GreenPostInstallDebloat.ps1` — user-facing wrapper: self-elevates via
-  UAC, runs the full destructive flag set, keeps window open, forwards extra
-  args; honors `GPD_NO_PAUSE=1` for automation.
 - `README.md` — user-facing docs: what-it-does, build, usage, full flag
   table, exit codes, safety notes, log format. Treated as a contract that
   must be updated alongside CLI/behavior changes.

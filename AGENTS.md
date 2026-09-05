@@ -15,7 +15,7 @@ Copyright (c) 2026 aufkrawall
   disables/deletes services and scheduled tasks on real NVIDIA installations.
   During development/verification, ONLY ever run it with safe flags:
   `--dry-run`, `--list-components`, `--help`. Never invoke `--execute`,
-  `--kill-lockers`, the PowerShell wrapper, or a bare launch (which opens the
+  `--kill-lockers`, or a bare launch (which opens the
   wizard preselected for destructive mode).
 - **Default development loop:** Pure **Rust crate** at the repo root —
   its loop is `cargo build` (single-digit seconds). Stay in this loop while

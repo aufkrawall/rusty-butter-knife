@@ -115,18 +115,6 @@ to SYSTEM privileges, which are still sufficient for the vast majority of files.
 The parent waits for the SYSTEM worker task and reads its exit code via the Task
 Scheduler (`LastTaskResult`); failures propagate via exit codes 10 and 11.
 
-### PowerShell wrapper
-
-`Run-RustyButterKnife.ps1` elevates itself, runs the full cleanup shown
-above and keeps its window open afterwards so results stay visible. Extra
-arguments are passed through:
-
-```powershell
-.\Run-RustyButterKnife.ps1 --include-ngx --no-color
-```
-
-Set `$env:RBK_NO_PAUSE = 1` (or legacy `$env:GPD_NO_PAUSE = 1`) when automating.
-
 ---
 
 ## Flags
