@@ -1,5 +1,7 @@
 # Rusty Butter Knife
 
+![Rusty Butter Knife interactive menu](assets/screenshot.png)
+
 **WARNING: THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.**
 
 You use this tool entirely at your own risk. It deletes files, modifies Windows
@@ -71,8 +73,6 @@ Options:
 ```
 RustyButterKnife.exe
 ```
-
-![Rusty Butter Knife interactive menu](assets/screenshot.png)
 
 A bare launch (e.g. double-click in Explorer) opens the wizard with the
 recommended cleanup pre-selected:
