@@ -108,14 +108,16 @@ fn extended_length_path(p: &Path) -> PathBuf {
 }
 
 fn set_attrs_normal(path: &Path) -> bool {
-    crate::ffi::set_file_attributes_normal(&path.to_string_lossy())
+    let ext = extended_length_path(path);
+    crate::ffi::set_file_attributes_normal(&ext.to_string_lossy())
 }
 
 /// Read-only/system attributes make DeleteFileW and removals fail; clear them
 /// recursively without following symlinks or crossing reparse points
 /// (FS-01). Port of `clearBlockingAttributes`.
 fn clear_blocking_attributes(root: &Path) {
-    set_attrs_normal(root);
+    let ext_root = extended_length_path(root);
+    set_attrs_normal(&ext_root);
     fn walk_clear(dir: &Path) {
         let Ok(entries) = std::fs::read_dir(dir) else {
             return;
@@ -134,10 +136,10 @@ fn clear_blocking_attributes(root: &Path) {
         }
     }
     if matches!(
-        crate::fsutil::path_kind_no_follow(root),
+        crate::fsutil::path_kind_no_follow(&ext_root),
         Ok(crate::fsutil::PathKind::Directory)
     ) {
-        walk_clear(root);
+        walk_clear(&ext_root);
     }
 }
 
@@ -195,14 +197,16 @@ fn remove_tree_counted(root: &Path) -> Result<u64, std::io::Error> {
     let meta = std::fs::symlink_metadata(root)?;
     if meta.file_attributes() & crate::fsutil::FILE_ATTRIBUTE_REPARSE_POINT != 0 || !meta.is_dir() {
         // A junction/dir-symlink needs remove_dir semantics; file symlinks
-        // need remove_file. Try both, surface the first error if both fail.
-        match std::fs::remove_file(root) {
-            Ok(()) => return Ok(1),
-            Err(e) => {
-                std::fs::remove_dir(root).map_err(|_| e)?;
-                return Ok(1);
-            }
+        // need remove_file.
+        const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x0000_0010;
+        let is_dir_entry =
+            (meta.file_attributes() & FILE_ATTRIBUTE_DIRECTORY != 0) || meta.is_dir();
+        if is_dir_entry {
+            std::fs::remove_dir(root)?;
+        } else {
+            std::fs::remove_file(root)?;
         }
+        return Ok(1);
     }
     let mut count: u64 = 0;
     for entry in std::fs::read_dir(root)? {
@@ -252,7 +256,10 @@ fn unsafe_recursive_directory_decision(
             "display.update",
             "update.core",
         ];
-        if !ALLOWED_DRIVER_STORE_DIRS.contains(&leaf_lower) {
+        if !ALLOWED_DRIVER_STORE_DIRS
+            .iter()
+            .any(|d| d.eq_ignore_ascii_case(leaf_lower))
+        {
             return true;
         }
     }
@@ -370,8 +377,8 @@ pub fn delete_candidate(index: usize) {
             Ok(removed) => Ok(removed),
             Err(_) => {
                 // Retry once: clear read-only attributes and try the extended-length form.
-                clear_blocking_attributes(&c.path);
                 let ext = extended_length_path(&c.path);
+                clear_blocking_attributes(&ext);
                 remove_tree_counted(&ext)
             }
         };
@@ -477,9 +484,15 @@ mod tests {
     fn non_allowlisted_driver_store_dirs_blocked() {
         assert!(decision(
             true,
-            "c:\\windows\\system32\\driverstore\\filerepository\\nv_dispi.inf_amd64_0373\\NvCamera",
+            "c:\\windows\\system32\\driverstore\\filerepository\\nv_dispi.inf_amd64_0373\\DisplayDriver",
             "c:\\windows\\system32\\driverstore\\filerepository\\nv_dispi.inf_amd64_0373",
-            "NvCamera"
+            "DisplayDriver"
+        ));
+        assert!(decision(
+            true,
+            "c:\\windows\\system32\\driverstore\\filerepository\\nv_dispi.inf_amd64_0373\\system32",
+            "c:\\windows\\system32\\driverstore\\filerepository\\nv_dispi.inf_amd64_0373",
+            "system32"
         ));
     }
 
@@ -490,6 +503,8 @@ mod tests {
         assert!(!decision(true, "c:\\windows\\system32\\driverstore\\filerepository\\nv_dispi.inf_amd64_0373\\update.core", "c:\\windows\\system32\\driverstore\\filerepository\\nv_dispi.inf_amd64_0373", "update.core"), "update.core");
         assert!(!decision(true, "c:\\windows\\system32\\driverstore\\filerepository\\nv_dispi.inf_amd64_0373\\ansel", "c:\\windows\\system32\\driverstore\\filerepository\\nv_dispi.inf_amd64_0373", "ansel"), "ansel");
         assert!(!decision(true, "c:\\windows\\system32\\driverstore\\filerepository\\nv_dispi.inf_amd64_0373\\nvcamera", "c:\\windows\\system32\\driverstore\\filerepository\\nv_dispi.inf_amd64_0373", "nvcamera"), "nvcamera");
+        // Verify case-insensitivity on allowlisted directories
+        assert!(!decision(true, "c:\\windows\\system32\\driverstore\\filerepository\\nv_dispi.inf_amd64_0373\\NvCamera", "c:\\windows\\system32\\driverstore\\filerepository\\nv_dispi.inf_amd64_0373", "NvCamera"), "NvCamera mixed case");
     }
 
     #[test]

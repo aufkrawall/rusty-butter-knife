@@ -1,6 +1,6 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-08-26 (audit remediation landed; see
+Last cross-checked: 2026-09-05 (polyglot hardened audit and quality improvements; see
 log/recent.md)
 
 Primary sources:

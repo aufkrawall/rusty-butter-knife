@@ -13,7 +13,7 @@ use windows::Win32::System::TaskScheduler::{
     TASK_CREATE_OR_UPDATE, TASK_ENUM_HIDDEN, TASK_INSTANCES_IGNORE_NEW, TASK_LOGON_S4U,
     TASK_RUNLEVEL_HIGHEST, TASK_STATE_QUEUED, TASK_STATE_RUNNING,
 };
-use windows::Win32::System::Variant::{VARIANT, VT_BSTR, VT_I4};
+use windows::Win32::System::Variant::{VariantClear, VARIANT, VT_BSTR, VT_I4};
 
 /// Raw HRESULT carrier for safe-wrapper results.
 #[derive(Debug, Clone, Copy)]
@@ -53,11 +53,25 @@ fn var_i32(v: i32) -> VARIANT {
     var
 }
 
-fn var_bstr(s: &str) -> VARIANT {
+pub struct VariantGuard(VARIANT);
+
+impl Drop for VariantGuard {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = VariantClear(&mut self.0);
+        }
+    }
+}
+
+impl std::ops::Deref for VariantGuard {
+    type Target = VARIANT;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+fn var_bstr(s: &str) -> VariantGuard {
     let mut var = VARIANT::default();
-    // SAFETY: constructing a VT_BSTR variant that owns the BSTR via
-    // ManuallyDrop; the COM callee copies what it needs and our transient
-    // copy leaks only on early process exit (same lifetime as _variant_t).
     unsafe {
         let inner = (&mut var.Anonymous.Anonymous
             as *mut core::mem::ManuallyDrop<windows::Win32::System::Variant::VARIANT_0_0>)
@@ -65,7 +79,7 @@ fn var_bstr(s: &str) -> VARIANT {
         (*inner).vt = VT_BSTR;
         (*inner).Anonymous.bstrVal = core::mem::ManuallyDrop::new(BSTR::from(s));
     }
-    var
+    VariantGuard(var)
 }
 
 pub struct RegisteredTiTask {

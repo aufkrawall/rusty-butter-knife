@@ -333,11 +333,11 @@ pub fn attempt_trusted_installer_relaunch() -> TiRelaunchResult {
         }
 
         if silence_start.elapsed().as_secs() >= 15 {
-            log_line(
-                "INFO",
-                &format!("Still waiting for TI child... ({waited}s)"),
-            );
-            log_cursor = std::fs::metadata(&log_path).map(|m| m.len()).unwrap_or(log_cursor);
+            let wait_msg = format!("Still waiting for TI child... ({waited}s)");
+            log_line("INFO", &wait_msg);
+            let written_len =
+                format!("[{}] [INFO] {wait_msg}\n", crate::winfmt::log_time_stamp()).len() as u64;
+            log_cursor = log_cursor.saturating_add(written_len);
             silence_start = std::time::Instant::now();
         }
 

@@ -211,35 +211,39 @@ pub fn parse_args(args: &[String]) -> Options {
             ));
         } else if low == "--preserve-nvcontainers" {
             opt.preserve_nv_containers = true;
-        } else if (low == "--status-file"
+        } else if low == "--status-file"
             || low == "--log-dir"
             || low == "--ti-wait-seconds"
-            || low == "--log-file")
-            && i + 1 < args.len()
+            || low == "--log-file"
         {
-            i += 1;
-            let v = args[i].clone();
-            // A value that itself looks like a flag means the flag's value is
-            // missing. Record it as a problem so execute mode fails closed
-            // instead of silently swallowing the next switch (e.g.
-            // "--log-file --dry-run" would otherwise drop the dry-run
-            // request from a destructive run).
-            if v.starts_with('-') && v.len() > 1 {
-                opt.unknown_args.push(format!(
-                    "{a} is missing its value (found flag-like '{v}' instead)"
-                ));
-            } else {
-                match low.as_str() {
-                    "--status-file" => opt.status_file = v,
-                    "--log-dir" => opt.log_dir_override = v,
-                    "--log-file" => opt.log_file_override = v,
-                    "--ti-wait-seconds" => {
-                        if let Some(problem) = apply_ti_wait_seconds(&v, &mut opt) {
-                            opt.unknown_args.push(problem);
+            if i + 1 < args.len() {
+                i += 1;
+                let v = args[i].clone();
+                // A value that itself looks like a flag means the flag's value is
+                // missing. Record it as a problem so execute mode fails closed
+                // instead of silently swallowing the next switch (e.g.
+                // "--log-file --dry-run" would otherwise drop the dry-run
+                // request from a destructive run).
+                if v.starts_with('-') && v.len() > 1 {
+                    opt.unknown_args.push(format!(
+                        "{a} is missing its value (found flag-like '{v}' instead)"
+                    ));
+                } else {
+                    match low.as_str() {
+                        "--status-file" => opt.status_file = v,
+                        "--log-dir" => opt.log_dir_override = v,
+                        "--log-file" => opt.log_file_override = v,
+                        "--ti-wait-seconds" => {
+                            if let Some(problem) = apply_ti_wait_seconds(&v, &mut opt) {
+                                opt.unknown_args.push(problem);
+                            }
                         }
+                        _ => {}
                     }
-                    _ => {}
                 }
+            } else {
+                opt.unknown_args.push(format!("{a} is missing its value"));
+                console::err_out(&format!("Option {a} requires a value\n"));
             }
         } else if let Some(v) = a.strip_prefix("--ti-wait-seconds=") {
             if let Some(problem) = apply_ti_wait_seconds(v, &mut opt) {
@@ -491,4 +495,16 @@ mod tests {
         let p = apply_component_args(&["--component=NGX:on".into()]);
         assert!(p.is_empty());
     }
+
+    #[test]
+    fn flag_missing_at_end_of_args_is_reported_as_missing_value() {
+        let opts = parse_args(&["--dry-run".into(), "--log-file".into()]);
+        assert_eq!(opts.unknown_args.len(), 1);
+        assert_eq!(opts.unknown_args[0], "--log-file is missing its value");
+
+        let opts = parse_args(&["--dry-run".into(), "--ti-wait-seconds".into()]);
+        assert_eq!(opts.unknown_args.len(), 1);
+        assert_eq!(opts.unknown_args[0], "--ti-wait-seconds is missing its value");
+    }
 }
+

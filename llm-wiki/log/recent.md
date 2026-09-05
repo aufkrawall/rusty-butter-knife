@@ -1,3 +1,35 @@
+## 2026-09-05 — Full-codebase polyglot hardened audit & quality improvements
+
+Full repository audit (all Rust modules, legacy C++, build system, PowerShell wrapper,
+docs, wiki). Implemented 8 concrete improvements:
+
+1. Console LF normalization: unified `encode_crlf_utf16` across `console::out` and
+   `console::err_out`, converting bare `\n` to `\r\n` on real consoles without doubling
+   existing CRLF. Added unit test.
+2. CLI terminal argument parsing: fixed missing value handling when value-taking flags
+   (`--log-file`, `--ti-wait-seconds`, `--status-file`, `--log-dir`) appear at the end
+   of `std::env::args()`. Correctly classifies as missing value rather than unknown option.
+   Added unit test.
+3. Path length & attribute clearance: applied `extended_length_path` (`\\?\`) to
+   `clear_blocking_attributes` and `set_attrs_normal` so deep paths (>MAX_PATH) do not fail
+   read-only attribute stripping; ensured retry branch applies clearance to the extended path.
+4. Reparse point deletion routing: `remove_tree_counted` now explicitly inspects
+   `FILE_ATTRIBUTE_DIRECTORY` to route directory junctions/symlinks to `remove_dir` and
+   file symlinks to `remove_file` with direct error propagation.
+5. DriverStore case-insensitivity: updated allowlist folder matching in
+   `unsafe_recursive_directory_decision` to use `eq_ignore_ascii_case`.
+6. Standardized service/task classification: added `nvvad` and `nvwmi` to `NAME_TERMS`,
+   eliminating the one-off check in `service_action_decision` and extending proper
+   component classification to scheduled tasks. Added unit tests.
+7. Concurrent log cursor tracking: in `attempt_trusted_installer_relaunch`, updated the
+   15s heartbeat wait to advance `log_cursor` by the exact written byte length of the
+   parent message, preventing race-skipping of child log lines.
+8. COM BSTR memory leak resolution: wrapped `var_bstr` output in RAII `VariantGuard`
+   calling `VariantClear` on drop in `ffi_tasksched.rs`.
+9. Release profile optimization: enabled `lto = "thin"` and `codegen-units = 1` in `Cargo.toml`.
+10. PowerShell wrapper fallback lookup: expanded executable search order in
+    `Run-GreenPostInstallDebloat.ps1` to check repo root, dist directories, and release targets.
+
 ## 2026-09-04 — Root-cause fixes for debloat execution hang / multi-minute lag
 
 Investigation and proper root-cause fixes for debloat cleaning taking ~2+ minutes:

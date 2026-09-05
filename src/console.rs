@@ -19,18 +19,25 @@ fn is_console(h: isize) -> bool {
     h != 0 && ffi::is_console(h)
 }
 
+fn encode_crlf_utf16(text: &str) -> Vec<u16> {
+    let mut text16: Vec<u16> = Vec::with_capacity(text.len() + 1);
+    let mut prev = 0u16;
+    for unit in text.encode_utf16() {
+        if unit == b'\n' as u16 && prev != b'\r' as u16 {
+            text16.push(b'\r' as u16);
+        }
+        text16.push(unit);
+        prev = unit;
+    }
+    text16
+}
+
 /// Write to stdout via WriteConsoleW when attached to a console (Unicode-safe
 /// on any console code page), UTF-8 bytes otherwise.
 pub fn out(text: &str) {
     let h = ffi::stdout_handle();
     if is_console(h) {
-        let mut text16: Vec<u16> = Vec::with_capacity(text.len() + 1);
-        for unit in text.encode_utf16() {
-            if unit == b'\n' as u16 {
-                text16.push(b'\r' as u16);
-            }
-            text16.push(unit);
-        }
+        let text16 = encode_crlf_utf16(text);
         let _ = ffi::write_console_w(h, &text16);
     } else {
         let mut lock = std::io::stdout().lock();
@@ -42,7 +49,7 @@ pub fn out(text: &str) {
 pub fn err_out(text: &str) {
     let h = ffi::stderr_handle();
     if is_console(h) {
-        let text16: Vec<u16> = text.encode_utf16().collect();
+        let text16 = encode_crlf_utf16(text);
         let _ = ffi::write_console_w(h, &text16);
     } else {
         let mut lock = std::io::stderr().lock();
@@ -81,3 +88,24 @@ pub fn read_line() -> Option<String> {
 pub fn flush() {
     let _ = std::io::stdout().flush();
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encode_crlf_utf16_normalizes_line_endings() {
+        // Plain text without newlines
+        let plain = encode_crlf_utf16("hello");
+        assert_eq!(String::from_utf16(&plain).unwrap(), "hello");
+
+        // Bare LF becomes CRLF
+        let lf = encode_crlf_utf16("hello\nworld\n");
+        assert_eq!(String::from_utf16(&lf).unwrap(), "hello\r\nworld\r\n");
+
+        // Pre-existing CRLF is not doubled to CRCRLF
+        let crlf = encode_crlf_utf16("hello\r\nworld\r\n");
+        assert_eq!(String::from_utf16(&crlf).unwrap(), "hello\r\nworld\r\n");
+    }
+}
+

@@ -322,6 +322,8 @@ const NAME_TERMS: &[(&str, &str)] = &[
     ("share", "ShadowPlayShare"),
     ("nvstream", "Shield"),
     ("ansel", "AnselCamera"),
+    ("nvvad", "VirtualAudio"),
+    ("nvwmi", "NvWMI"),
     ("nvidia app", "GeForceExperienceAndNvidiaApp"),
     ("geforce experience", "GeForceExperienceAndNvidiaApp"),
     ("broadcast", "GeForceExperienceAndNvidiaApp"),
@@ -349,10 +351,6 @@ pub fn service_action_decision(
     }
     if !is_nvidia_context_string(&combined) {
         return ActionDecision::NotMatched;
-    }
-    // VirtualAudio keeps its opt-in token rule (nvvad has no NVIDIA context).
-    if to_lower(&combined).contains("nvvad") {
-        return ActionDecision::resolve("VirtualAudio", enabled);
     }
     match classify_named_target(&combined) {
         Some(key) => ActionDecision::resolve(key, enabled),
@@ -460,10 +458,18 @@ mod tests {
 
     #[test]
     fn task_classification_gates_by_component() {
-        let all = enabled_of(&["Telemetry", "UpdateAndProfileUpdater"]);
+        let all = enabled_of(&["Telemetry", "UpdateAndProfileUpdater", "VirtualAudio", "NvWMI"]);
         assert_eq!(
             task_action_decision("\\NvTmrep\\NVIDIA Telemetry Task", &all).allowed_key(),
             Some("Telemetry")
+        );
+        assert_eq!(
+            task_action_decision("\\NvVAD\\Virtual Audio Task", &all).allowed_key(),
+            Some("VirtualAudio")
+        );
+        assert_eq!(
+            task_action_decision("\\NvWMI\\WMI Monitor", &all).allowed_key(),
+            Some("NvWMI")
         );
         assert!(matches!(
             task_action_decision("\\Inventory\\Scan", &all),
@@ -472,6 +478,10 @@ mod tests {
         let none: EnabledMap = BTreeMap::new();
         assert!(matches!(
             task_action_decision("\\NvNode\\NVIDIA Update Task", &none),
+            ActionDecision::ComponentDisabled(_)
+        ));
+        assert!(matches!(
+            task_action_decision("\\NvWMI\\WMI Monitor", &none),
             ActionDecision::ComponentDisabled(_)
         ));
     }

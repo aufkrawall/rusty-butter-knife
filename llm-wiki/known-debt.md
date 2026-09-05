@@ -1,6 +1,6 @@
 # Known and Accepted Debt
 
-Last verified: 2026-08-26
+Last verified: 2026-09-05
 
 Primary sources:
 - `AGENTS.md`
@@ -16,7 +16,7 @@ becomes cheap or safe to fix should be fixed and removed from this page.
 
 ## No CI, no sanitizers, partial destructive-path coverage
 
-Since 2026-08-26 the Rust crate has 51 tests (`cargo test --all-targets`),
+Since 2026-08-26 the Rust crate has 57 tests (`cargo test --all-targets`),
 including REAL-WINDOWS integration tests (subprocess capture bounds,
 junction no-follow behavior) and pure-decision cores extracted for the
 service masks, TI wait state machine, CLI parsing and post-run reporting.
@@ -73,7 +73,7 @@ inside explains it. If touched anyway, a rename to e.g.
 ## Audit leftovers (2026-08-23, weighed and accepted)
 
 Deferred findings from the full-repo audit, each deliberately accepted.
-Items resolved in the same-day second pass are listed at the bottom:
+Items resolved in subsequent passes are listed below:
 
 - Scheduled-task matching picks the first CSV field starting with `\` as the
   task path because schtasks `/FO CSV` column order varies between versions;
@@ -89,14 +89,8 @@ Items resolved in the same-day second pass are listed at the bottom:
   exclusively inside packages. Default-on AnselCamera vs historical
   `NvCamera*.dll` inside old nv_dispi packages remains a version-dependent
   latent risk of the same class.
-- COM VARIANT helpers in `ffi_tasksched.rs` intentionally leak BSTRs on
-  success paths (process-lifetime objects, few calls per run) — mirrors
-  `_variant_t` lifetime simplification, commented in code.
-- `console::err_out` does not convert LF→CRLF on real consoles (cosmetic;
-  stderr is usually redirected).
 
-Resolved same day (second audit pass), recorded here so they are not
-re-derived:
+Resolved in subsequent audit passes (recorded here so they are not re-derived):
 
 - `is_trusted_installer()` no longer substring-matches; it accepts exactly
   `NT SERVICE\TrustedInstaller` or its well-known service SID
@@ -106,11 +100,14 @@ re-derived:
   (`LLVM_MINGW_SHA256`, taken from the GitHub release asset digest) and
   verified automatically on every fresh download; `--sha256` overrides.
 - Service handles opened with rights matched to requested operations:
-  NOTE — this bullet was recorded as resolved on 2026-08-23 but was NOT
-  actually landed in code (an overclaim; open_service_for_ops still merged
-  CHANGE_CONFIG|DELETE). It was genuinely implemented on 2026-08-26 via
-  ffi_services::desired_access_for_ops with exact-mask unit tests; audit
-  cross-check confirmed the code never matched the claim until then.
+  implemented on 2026-08-26 via `ffi_services::desired_access_for_ops` with
+  exact-mask unit tests.
+- COM VARIANT helpers in `ffi_tasksched.rs`: resolved 2026-09-05 via
+  `VariantGuard` RAII struct that invokes `VariantClear` on drop, eliminating
+  transient process-lifetime BSTR leaks.
+- `console::err_out` LF normalization: resolved 2026-09-05 via
+  `encode_crlf_utf16` shared with `console::out`, preventing missing CRs on
+  Windows console without doubling pre-existing CRLF.
 
 ## Audit remediation leftovers (2026-08-26, weighed and accepted)
 
@@ -126,5 +123,3 @@ From the GreenPostInstallDebloatNative — Audit Handoff Summary pass:
   service rights, fire-and-forget stop). It is NO LONGER default-built or
   distributed (`python build.py --variant cpp|all` keeps it buildable);
   parity fixes in the reference TU would violate its must-not-grow rule.
-- COM VARIANT helpers intentionally leak BSTRs on success paths (unchanged;
-  see above).

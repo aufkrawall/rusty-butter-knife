@@ -50,10 +50,17 @@ if (-not $isAdministrator) {
     exit
 }
 
-$executable = Join-Path $PSScriptRoot 'GreenPostInstallDebloatNative.exe'
+$candidatePaths = @(
+    (Join-Path $PSScriptRoot 'GreenPostInstallDebloatNative.exe')
+    (Join-Path $PSScriptRoot 'dist\rust-x86_64\GreenPostInstallDebloatNative.exe')
+    (Join-Path $PSScriptRoot 'dist\rust-aarch64\GreenPostInstallDebloatNative.exe')
+    (Join-Path $PSScriptRoot 'target\release\GreenPostInstallDebloatNative.exe')
+)
 
-if (-not (Test-Path -LiteralPath $executable -PathType Leaf)) {
-    Write-Error "Executable not found: $executable"
+$executable = $candidatePaths | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+
+if (-not $executable) {
+    Write-Error ("Executable not found. Checked candidate paths:`n  " + ($candidatePaths -join "`n  "))
     exit 1
 }
 
