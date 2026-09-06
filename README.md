@@ -70,10 +70,12 @@ Options:
 | `--arch aarch64` | Cross-compile for Windows-on-ARM64 into `dist/<arch>/`. Requires the matching rustup target (`aarch64-pc-windows-msvc`). |
 | `--clean` | Remove `target/` and `dist/`. |
 
-The repository includes a Windows GitHub Actions gate that runs formatting,
-build, clippy, unit/integration tests, and safe CLI smoke commands on pushes and
-pull requests. Marked release commits on `main` additionally build the verified
-x86_64 artifact and publish the GitHub release.
+The repository includes a Windows GitHub Actions gate that runs build, clippy,
+unit/integration tests, and safe CLI smoke commands on pushes and pull requests.
+Existing source is not guaranteed whole-tree rustfmt-clean, so verification
+intentionally avoids unrelated formatter churn. Marked release commits on
+`main` additionally build the verified x86_64 artifact and publish the GitHub
+release.
 
 ---
 
@@ -140,7 +142,7 @@ Scheduler (`LastTaskResult`); failures propagate via exit codes 10 and 11.
 | `--kill-lockers` | Stop bloat processes before deleting. |
 | `--preserve-nvcontainers[=on/off]` | Also kill NVDisplay.Container/nvcontainer if set to off. Default preserves them. |
 | `--disable-services` | Disable matched NVIDIA bloat services. |
-| `--delete-services` | Delete matched NVIDIA bloat services. |
+| `--delete-services` | Delete matching NVIDIA bloat services. |
 | `--disable-scheduled-tasks` | Disable matched NVIDIA scheduled tasks (default on). |
 | `--no-disable-scheduled-tasks` | Do not disable matched scheduled tasks. |
 | `--delete-scheduled-tasks` | Delete matched NVIDIA scheduled tasks. |
@@ -215,9 +217,9 @@ Scheduler (`LastTaskResult`); failures propagate via exit codes 10 and 11.
   by absolute path from `%SystemRoot%\System32` — never through the PATH search,
   which would allow CWD/app-dir planting in an elevated context.
 - Ctrl+C / closing the console triggers cancellation. For a UAC handoff, the
-  launcher relays the request to the elevated process and remains attached
-  until that process actually exits; it never reports "aborted" while an
-  elevated destructive child is still running.
+  launcher relays the request to the elevated process through a named Windows
+  event and remains attached until that process actually exits; it never
+  reports "aborted" while an elevated destructive child is still running.
 - Scheduled-task names are decoded from the OEM code page, so non-ASCII task
   names survive matching and `/TN` operations on localized systems.
 - DriverStore package roots are recognized for both `.inf_amd64_` (x64) and
