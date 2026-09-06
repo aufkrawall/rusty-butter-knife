@@ -7,12 +7,12 @@
 //! another module that may lock again.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use crate::types::{Options, RunState};
 
-pub const RBK_VERSION: &str = "2.0.0";
+pub const RBK_VERSION: &str = "2.0.1";
 pub const GPD_VERSION: &str = RBK_VERSION;
 
 /// Scheduled-task name prefix for TrustedInstaller relaunch artifacts.
@@ -34,15 +34,61 @@ static RUN: Mutex<Option<RunState>> = Mutex::new(None);
 static ENABLED: Mutex<Option<BTreeMap<String, bool>>> = Mutex::new(None);
 static USER_QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 
-/// Ctrl+C / console-close request (set from the handler thread).
-pub static ABORT_REQUESTED: AtomicBool = AtomicBool::new(false);
+/// Ctrl+C / console-close request. The console handler only stores the local
+/// atomic. Ordinary execution paths calling `load` relay a local request to
+/// the optional cross-process abort file and also observe requests relayed by
+/// a launcher/elevated parent. This preserves signal-handler safety while
+/// making stop-after-current-item semantics span the UAC process boundary.
+pub struct AbortFlag(AtomicBool);
+
+impl AbortFlag {
+    pub const fn new() -> Self {
+        Self(AtomicBool::new(false))
+    }
+
+    pub fn store(&self, value: bool, ordering: Ordering) {
+        self.0.store(value, ordering);
+    }
+
+    pub fn load(&self, ordering: Ordering) -> bool {
+        if self.0.load(ordering) {
+            relay_abort_file();
+            return true;
+        }
+        abort_file_requested()
+    }
+
+    pub fn local_requested(&self, ordering: Ordering) -> bool {
+        self.0.load(ordering)
+    }
+}
+
+pub static ABORT_REQUESTED: AbortFlag = AbortFlag::new();
+
+fn abort_file_path() -> Option<String> {
+    let g = lock(&OPTS);
+    g.as_ref()
+        .map(|o| o.abort_file.clone())
+        .filter(|p| !p.is_empty())
+}
+
+fn abort_file_requested() -> bool {
+    abort_file_path().is_some_and(|p| std::path::Path::new(&p).is_file())
+}
+
+pub fn relay_abort_file() {
+    let Some(path) = abort_file_path() else {
+        return;
+    };
+    let _ = std::fs::write(path, b"abort\n");
+}
 
 pub fn user_quit_requested() -> bool {
-    USER_QUIT_REQUESTED.load(std::sync::atomic::Ordering::SeqCst)
+    USER_QUIT_REQUESTED.load(Ordering::SeqCst)
 }
 
 pub fn set_user_quit_requested(v: bool) {
-    USER_QUIT_REQUESTED.store(v, std::sync::atomic::Ordering::SeqCst);
+    USER_QUIT_REQUESTED.store(v, Ordering::SeqCst);
 }
 
 pub fn init_app(opts: Options) {
