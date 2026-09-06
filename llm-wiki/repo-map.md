@@ -1,142 +1,117 @@
 # Repo Map (code map)
 
-Last cross-checked: 2026-08-26 (audit remediation; GPD_VERSION 1.5.0)
+Last cross-checked: 2026-09-06 (v2.0.1 safety hardening)
 
-Primary sources:
-- top-level repo layout (verified against the working tree)
-- `build.py`
-- `GreenPostInstallDebloatNative.cpp`
+## Top-level
 
-## How to navigate this map
+- `Cargo.toml` / `Cargo.lock` — binary crate metadata and pinned dependency
+  graph. Package/runtime version is mirrored by `src/app.rs::RBK_VERSION`.
+- `build.py` — Windows release-build entry point. Always passes an explicit
+  MSVC target triple, applies compiler path remapping, PE-verifies the requested
+  architecture, and copies only verified artifacts to
+  `dist/<arch>/RustyButterKnife.exe`.
+- `.cargo/config.toml` — target-specific Rust/link settings.
+- `.github/workflows/windows-ci-release.yml` — Windows-native gate on pushes
+  and pull requests: fmt check, build, clippy `-D warnings`, all targets/tests,
+  safe CLI smoke. A `[release]` main push additionally builds and publishes the
+  current package version as a GitHub release.
+- `README.md` — user-facing behavior/CLI/safety/logging contract.
+- `AGENTS.md` — development, safety and release rules.
+- `assets/` — README media only.
+- `llm-wiki/` — derived project memory and audit chronology.
 
-`AGENTS.md` points agents at `llm-wiki/index.md` for routing; this page is
-the concrete file-level code map. If line anchors here predate a refactor,
-treat them as approximate and re-verify (function names are the stable
-anchors; the file is a single translation unit).
+## Rust modules (`src/`)
 
-## Core Tree
+### Entry/orchestration
 
-- `src/` — **Rust crate (primary implementation)**, ported 1:1 from the
-  legacy TU; every module under the ~800-line ceiling:
-  `main.rs` (orchestration, wmain flow), `app.rs` (globals/exit codes),
-  `types.rs`, `util.rs`, `winfmt.rs`, `console.rs`, `logging.rs`,
-  `components.rs`, `options.rs` (strict CLI parsing + bad-args gate),
-  `menu.rs`, `sysinfo.rs`, `procs.rs`,
-  `matching.rs` (predicates + ActionDecision classification layer),
-  `discovery.rs`, `actions.rs` (component-gated mutations),
-  `deletion.rs` (reparse-aware deletion + reboot scheduling),
-  `report.rs` (tri-state verification, VerifyOutcome core),
-  `tasksched.rs` (TI relaunch + pure ti_poll_decision),
-  plus the FFI boundary family (`ffi.rs`, `ffi_capture.rs`,
-  `ffi_services.rs`, `ffi_tasksched.rs`) and `fsutil.rs` (no-follow
-  PathKind helpers) — the ffi* modules are the ONLY ones containing
-  `unsafe` (crate root denies it elsewhere). Build via
-  `cargo build --release`; gate adds clippy -D warnings, fmt, and
-  cargo test (51 tests incl. subprocess/junction integration).
-- `GreenPostInstallDebloatNative.cpp` — LEGACY C++17 single TU, kept as
-  reference and still buildable; must not grow. Section map by first
-  defining line (the Rust modules in `src/` mirror these sections 1:1):
-  - 1–77: header comment block (usage, safety model, build examples) — keep
-    in sync with behavior changes; then includes and `GPD_VERSION`.
-  - ~79–175: exit-code enum (`EXIT_*`), `kTiTaskPrefix` ("NvDebloatTI-"),
-    structs (`Options`, `Component`, `Candidate`, `ActionRecord`,
-    `RunState`) and globals (`g_options`, `g_state`, `g_componentEnabled`,
-    `g_abortRequested`).
-  - ~179–345: string/util helpers: `toLower`, `wildcardMatchNoCase`,
-    `quoteArg`, `widen`, `decodeProcessOutput` (OEM codepage), JSON helpers
-    (`jsonEscape`, `jsonFindStringField`, `jsonFindIntField`).
-  - ~419–460: console color + logging core: `consoleColor`, `logLine`,
-    `logAction`, `addAction`. ALL output goes through here so one run = one
-    log file shared by launcher/elevated/SYSTEM processes.
-  - ~466–550: process execution: `ProcessResult`, `runProcessCapture`,
-    `runShellCommand`; privilege checks: `isAdmin`, `systemDirFile`
-    (System32 absolute paths only), `currentTokenAccount`,
-    `isTrustedInstaller`.
-  - ~621–690: `buildComponents()` — the bloat-component catalog (keys,
-    display names, default-enabled flags, leaf globs). Optional components
-    (NGX, HDAudio, PhysX, NotebookOptimus, VirtualAudio, NvWMI,
-    CaptureSDK) are default-off. UpdateAndProfileUpdater is kept off in
-    wizard defaults on purpose.
-  - ~693–950: CLI surface: `initializeComponentSelection`, `printUsage`,
-    `parseArgs`, `parseBoolAssignment`, `applyComponentArgs`,
-    `interactiveMenu`. Flag table in README must match this section.
-  - ~951–1027: `getExePath`, `initializeRunState` (single-instance mutex),
-    `writeStatusJson` (child→parent status handoff).
-  - ~1028–1330: TrustedInstaller relaunch machinery: `sweepStaleTiArtifacts`
-    (cleans orphaned NvDebloatTI-* tasks/status files),
-    `effectiveChildSwitches`, `attemptTrustedInstallerRelaunch` (scheduled-
-    task COM API, task name `NvDebloatTI-<pid>`, 2 h execution limit;
-    falls back to SYSTEM/admin per flags).
-  - ~1332–1665: matching/predicate layer — THE SAFETY CORE:
-    `isNvidiaContextString`, `isPreservedContainerName`,
-    `isBloatProcessName`, DriverStore guards (`leafHasInfArchMarker`,
-    `isDriverStorePackageRoot(Name)`, `isDriverStoreSidecarIni`),
-    `isDeveloperToolPath`, `isCoreDisplayDriverLeaf`,
-    `isExcludedCandidatePath`, `shouldPruneTraversal`,
-    `matchComponentForPath`, `unsafeRecursiveDirectoryTarget`,
-    `collapseNestedCandidates`, `discoverCandidates`. Fail-closed direction
-    is mandatory here (see AGENTS.md).
-  - ~1667–1770: `tallyPreviousLogs` (history scan of old run logs),
-    `writeCandidatesCsv` (despite the name: appends candidates to the run
-    log, no separate file), `inspectNvContainerModules`.
-  - ~1772–1975: actions on live system: `killLockerProcesses`,
-    `serviceMatchesBloat`, `handleServices`, `taskMatchesBloat`,
-    `handleScheduledTasks` (OEM-codepage task-name decoding).
-  - ~1976–2117: deletion layer: `takeOwnershipIfRequested` (takeown/icacls
-    via well-known SIDs), `extendedLengthPath` (`\\?\` fallback),
-    `clearBlockingAttributes`, `scheduleDeleteOne/Tree` (MoveFileEx reboot
-    deletion), `deleteCandidate`.
-  - ~2118–2331: reporting/orchestration: `writeReport` (JSON report block
-    into the log), `verifyCandidateRemoval` (post-run existence check),
-    `runCleanup`.
-  - ~2332–2499: `relaunchElevatedForWizard` (UAC relaunch with forwarded
-    selection), `consoleCtrlHandler` (graceful abort → exit code 3),
-    `wmain`.
-- `build.py` — build entry point: DEFAULT variant is rust only; the legacy
-  C++ TU is reference code buildable via `--variant cpp` / `--variant all`.
-  Output lands in `dist/<variant>-<arch>/`. Every artifact's PE COFF machine
-  type is parsed and verified against the requested arch before publishing.
-  For the C++ leg it pins llvm-mingw (`LLVM_MINGW_VERSION`),
-  downloads/SHA256-verifies/extracts into `mingw64/`
-  if missing, falls back to system `clang++`. Compile flags: `-std=c++17
-  -municode -O2 -Wall -Wextra -static`; targets are EXPLICIT per arch:
-  `--target=x86_64-w64-mingw32` / `--target=aarch64-w64-mingw32` for C++, and
-  msvc triples for Rust (x86_64-pc-windows-msvc / aarch64-pc-windows-msvc).
-- `README.md` — user-facing docs: what-it-does, build, usage, full flag
-  table, exit codes, safety notes, log format. Treated as a contract that
-  must be updated alongside CLI/behavior changes.
-- `.gitignore` — excludes `mingw64/`, `*.exe`, `*.log`, `*.7z`, `_extract/`,
-  `/target` (Rust build dir). `Cargo.lock` is committed (binary crate).
+- `main.rs` — program entry, strict early-exit flow, execute-mode argument
+  gate, UAC handoff, single-instance mutex, TI orchestration, status JSON and
+  final pause behavior. The UAC launcher creates a named manual-reset abort
+  event, forwards its name to the elevated process, signals it after local
+  Ctrl+C, and remains attached until child exit.
+- `app.rs` — shared application state, exit codes, version constants and
+  `AbortFlag`. `AbortFlag::load` combines the local atomic with the forwarded
+  named abort event; the console handler itself remains atomic-only.
+- `types.rs` — `Options`, `Component`, `Candidate`, `ActionRecord`, `RunState`.
+- `options.rs` — CLI parser, strict boolean/numeric parsing, component switches,
+  bad-argument collection. Internal `--abort-event` is the UAC handoff only;
+  it is not documented as a public flag.
+- `menu.rs` — interactive component selection and `EXECUTE` confirmation.
 
-## Important Support and Output Paths
+### Safety/catalog/matching
 
-- `mingw64/` — bundled llvm-mingw toolchain (~730 MB). Regenerable at any
-  time via `python build.py`; removable via `python build.py --clean`. Never
-  commit.
-- `GreenPostInstallDebloatNative.exe` — build output (gitignored). Both
-  arch targets write this same filename (see known-debt.md).
-- `debloat-YYYYMMDD-HHMMSS.log` — run logs beside the exe (gitignored).
-- `llvm-mingw-<version>-ucrt-x86_64.zip` / `_extract/` — download cache /
-  temp extraction dir used by `build.py`; cleaned up automatically.
-- `GreenPostInstallDebloatNative.7z` — manual release snapshot (gitignored).
+- `components.rs` — canonical component catalog: keys, display names, defaults,
+  globs and exact leaf names.
+- `matching.rs` — primary fail-closed classification layer for files,
+  processes, services and tasks (`ActionDecision`). DriverStore/core-display
+  exclusions and component ownership live here.
+- `ffi_process.rs` — **second mutation-time identity boundary** for process,
+  service and task actions. New unsafe code belongs here because it wraps
+  Win32 process/event handles:
+  - explicit killable-process basename allowlist;
+  - live `QueryFullProcessImageNameW` verification through the same handle used
+    for termination, closing basename false positives and PID-reuse retargeting;
+  - approved NVIDIA installation-root checks;
+  - strong NVIDIA context predicate for service/task mutation;
+  - named UAC abort-event create/signal/observe wrappers.
+- `actions.rs` — live process/service/task operations. It consumes both the
+  semantic matching layer and `ffi_process` mutation-time gates before doing
+  anything destructive.
 
-## High-Risk / High-Value Files
+### Discovery/deletion/reporting
 
-- `GreenPostInstallDebloatNative.cpp` — runs elevated as TrustedInstaller/
-  SYSTEM and deletes real system files. The predicate layer (~lines
-  1332–1665) is the safety boundary protecting driver packages and core
-  display files; careless changes there have maximal blast radius.
-- `build.py` — downloads and EXECUTES a compiler toolchain; hash pinning
-  via `--sha256` exists for supply-chain reasons. Keep the pinned version +
-  URL scheme intact unless deliberately changing policy.
+- `discovery.rs` — search-root construction, recursive traversal with pruning,
+  candidate dedup/collapse, previous-log history and candidate-list logging.
+- `fsutil.rs` — no-follow filesystem kind probes and postorder traversal.
+  Reparse points are surfaces only and are never descended through.
+- `deletion.rs` — candidate deletion, ownership helpers, extended-length paths,
+  attribute clearing, DriverStore recursive-target guard and reboot scheduling.
+- `report.rs` — cleanup orchestration after privilege setup, post-run existence
+  verification and JSON report block.
+- `logging.rs` — unified append/log action model and process-spanning mutex for
+  large report blocks.
 
-## Practical Notes
+### Privilege/process/Task Scheduler
 
-- Single-file architecture is deliberate (see AGENTS.md); do not split.
-- The header comment block of the .cpp duplicates key usage/safety claims —
-  update it together with README when behavior changes (three-way sync:
-  header comment ↔ printUsage ↔ README flag table).
-- Exit codes are an API surface for the wrapper script and parent→child TI
-  handoff (0/1/2/3/10/11/12); changing them breaks both.
-- `writeCandidatesCsv()` writes INTO the log, not a CSV file — the function
-  name is historical; don't "fix" it without reading it.
+- `sysinfo.rs` — executable/system-directory discovery, identity/admin/TI
+  checks and run-state/log-path initialization.
+- `tasksched.rs` — TrustedInstaller/SYSTEM scheduled-task orchestration,
+  effective child switches, bounded/abort-aware wait and child-log streaming.
+- `procs.rs` — bounded external-command runner facade.
+- `ffi_capture.rs` — raw Win32 subprocess capture with restricted handle
+  inheritance, drain-only reads, timeout/abort termination and regression tests.
+- `ffi_services.rs` — SCM enumeration, least-privilege service handles,
+  bounded stop convergence.
+- `ffi_tasksched.rs` — Task Scheduler COM wrappers, recursive enumeration and
+  TI task registration; COM variants use RAII cleanup.
+- `ffi.rs` — remaining general Win32 wrappers (console, mutexes, identity,
+  Toolhelp snapshots, UAC `ShellExecuteExW`, file primitives). `unsafe` is
+  confined to the `ffi*` family.
+
+### Utilities
+
+- `console.rs` — Unicode console/stdout/stderr and line input.
+- `util.rs` — case folding, wildcard/argv quoting, CSV/JSON helpers and unique
+  suffix generation.
+- `winfmt.rs` — Windows timestamps/error/output formatting.
+
+## Safety boundaries to re-check first
+
+1. `matching.rs` — candidate/component classification and core-driver guards.
+2. `ffi_process.rs` + `actions.rs` — mutation-time identity validation for
+   processes/services/tasks.
+3. `fsutil.rs` + `deletion.rs` — reparse/DriverStore recursive deletion rules.
+4. `main.rs` + `tasksched.rs` — privilege handoff, abort semantics and parent /
+   child exit-code propagation.
+5. `logging.rs` — destructive runs must retain a writable audit trail.
+
+## Verification and release
+
+- Normal close-out gate is documented in `AGENTS.md` and mirrored in the
+  Windows Actions workflow.
+- Safe CLI smokes: `--list-components`, `--version`, `--help`; `--dry-run` only
+  when candidate/report behavior needs inspection.
+- Never run execute-mode regression except on a sacrificial VM.
+- Release binaries are generated, not committed. A release marker is added to
+  `main` only after the same tree has passed the Windows gate; the workflow then
+  builds the PE-verified x86_64 artifact and creates the GitHub release.
