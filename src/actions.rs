@@ -3,6 +3,8 @@
 //! via schtasks.exe. Ports of `inspectNvContainerModules`,
 //! `killLockerProcesses`, `handleServices`, `handleScheduledTasks`.
 
+mod target_safety;
+
 use crate::app;
 use crate::ffi;
 use crate::logging::{add_action, log_action, log_line};
@@ -114,11 +116,9 @@ pub fn inspect_nv_container_modules(post_delete_phase: bool) {
     }
 }
 
-/// Port of `killLockerProcesses`. Every candidate is classified against the
-/// component selection first (SAFETY-01): a deselected component prevents its
-/// processes from being terminated. Terminations happen in one batch followed
-/// by a single shared ~3 s convergence deadline instead of up to 3 s per
-/// process (audit finding: serial per-process waits amplify cleanup time).
+/// Stop only explicit historical NVIDIA bloat executables, and verify the
+/// live process image through the same handle used for termination. This
+/// prevents generic basename false positives and PID-reuse races.
 pub fn kill_locker_processes(enabled: &crate::app::EnabledMap) {
     let (kill_lockers, execute, preserve_containers) =
         app::opts(|o| (o.kill_lockers, o.execute, o.preserve_nv_containers));
@@ -141,13 +141,16 @@ pub fn kill_locker_processes(enabled: &crate::app::EnabledMap) {
     };
 
     struct Target {
-        handle: Option<ffi::TerminateHandle>,
+        handle: target_safety::VerifiedTerminateHandle,
         exe_name: String,
         component_key: String,
     }
     let mut targets: Vec<Target> = Vec::new();
 
     for proc in processes {
+        if !target_safety::process_name_is_explicitly_killable(&proc.exe_name) {
+            continue;
+        }
         let component = match process_action_decision(&proc.exe_name, enabled, preserve_containers)
         {
             ActionDecision::Allowed(c) => c,
@@ -161,35 +164,49 @@ pub fn kill_locker_processes(enabled: &crate::app::EnabledMap) {
                 );
                 continue;
             }
-            ActionDecision::NotMatched => continue, // unclassified: fail closed
+            ActionDecision::NotMatched => continue,
         };
+
         if !execute {
-            log_action(
-                "KillProcess",
-                "DRYRUN",
-                &component.key,
-                &proc.exe_name,
-                &format!("PID={}", proc.pid),
-            );
-            continue;
-        }
-        let handle = match ffi::TerminateHandle::open(proc.pid) {
-            Some(h) => Some(h),
-            None => {
-                log_action(
+            match target_safety::verify_process_for_dry_run(proc.pid, &proc.exe_name) {
+                Ok(image) => log_action(
                     "KillProcess",
-                    "WARN",
+                    "DRYRUN",
                     &component.key,
                     &proc.exe_name,
-                    &format!(
-                        "PID={} OpenProcess failed: {}",
-                        proc.pid,
-                        format_win_error(ffi::TerminateHandle::last_error())
-                    ),
+                    &format!("PID={} verified image={image}", proc.pid),
+                ),
+                Err(detail) => log_action(
+                    "KillProcess",
+                    "SKIP",
+                    &component.key,
+                    &proc.exe_name,
+                    &format!("PID={} identity verification failed: {detail}", proc.pid),
+                ),
+            }
+            continue;
+        }
+
+        let (handle, image) = match target_safety::VerifiedTerminateHandle::open(
+            proc.pid,
+            &proc.exe_name,
+        ) {
+            Ok(v) => v,
+            Err(detail) => {
+                log_action(
+                    "KillProcess",
+                    "SKIP",
+                    &component.key,
+                    &proc.exe_name,
+                    &format!("PID={} identity verification failed: {detail}", proc.pid),
                 );
-                None
+                continue;
             }
         };
+        log_line(
+            "INFO",
+            &format!("Verified process target: PID={} Image={image}", proc.pid),
+        );
         targets.push(Target {
             handle,
             exe_name: proc.exe_name.clone(),
@@ -201,10 +218,8 @@ pub fn kill_locker_processes(enabled: &crate::app::EnabledMap) {
         return;
     }
 
-    // Phase A: request termination for every selected target...
     for t in &targets {
-        let Some(handle) = &t.handle else { continue };
-        let ok = handle.terminate(0);
+        let ok = t.handle.terminate(0);
         log_action(
             "KillProcess",
             if ok { "INFO" } else { "WARN" },
@@ -213,21 +228,19 @@ pub fn kill_locker_processes(enabled: &crate::app::EnabledMap) {
             &if ok {
                 "Terminate requested".to_string()
             } else {
-                format_win_error(ffi::TerminateHandle::last_error())
+                format_win_error(ffi::current_last_error())
             },
         );
     }
-    // Phase B: ...then ONE shared convergence deadline for the whole batch
-    // (file handles are released asynchronously when lockers die).
+
     const CONVERGENCE_MS: u32 = 3000;
     let start = std::time::Instant::now();
     for t in &targets {
-        let Some(handle) = &t.handle else { continue };
         let elapsed = start.elapsed().as_millis() as u32;
         if elapsed >= CONVERGENCE_MS {
             break;
         }
-        if !handle.wait_ms(CONVERGENCE_MS - elapsed) {
+        if !t.handle.wait_ms(CONVERGENCE_MS - elapsed) {
             log_action(
                 "KillProcess",
                 "WARN",
@@ -282,6 +295,10 @@ pub fn handle_services(enabled: &crate::app::EnabledMap) {
     };
 
     for svc in services {
+        let full = format!("{} ({})", svc.name, svc.display);
+        if !target_safety::has_strong_nvidia_named_target_context(&full) {
+            continue;
+        }
         let preserve = app::opts(|o| o.preserve_nv_containers);
         let component = match service_action_decision(&svc.name, &svc.display, enabled, preserve) {
             ActionDecision::Allowed(c) => c,
@@ -290,14 +307,13 @@ pub fn handle_services(enabled: &crate::app::EnabledMap) {
                     "Service",
                     "SKIP",
                     &c.key,
-                    &format!("{} ({})", svc.name, svc.display),
+                    &full,
                     "component deselected",
                 );
                 continue;
             }
-            ActionDecision::NotMatched => continue, // unclassified: fail closed
+            ActionDecision::NotMatched => continue,
         };
-        let full = format!("{} ({})", svc.name, svc.display);
         if !execute {
             if kill_lockers {
                 log_action("StopService", "DRYRUN", &component.key, &full, "");
@@ -311,8 +327,6 @@ pub fn handle_services(enabled: &crate::app::EnabledMap) {
             continue;
         }
 
-        // Least privilege (SERVICE-01): request only the rights the selected
-        // operations actually exercise.
         let handle = match scm.open_service_for_ops(
             &svc.name,
             kill_lockers,
@@ -402,8 +416,6 @@ pub fn handle_services(enabled: &crate::app::EnabledMap) {
     }
 }
 
-/// Bounded convergence for SERVICE_CONTROL_STOP (audit finding SERVICE-02):
-/// a service may still be exiting while later stages try to remove its files.
 const SERVICE_STOP_WAIT_MS: u32 = 10_000;
 
 /// Port of `handleScheduledTasks` (schtasks.exe by absolute System32 path).
@@ -424,7 +436,6 @@ pub fn handle_scheduled_tasks(enabled: &crate::app::EnabledMap) {
     }
 
     let task_names: Vec<String> = {
-        // Fast path: direct COM Task Scheduler enumeration (instantaneous; avoids slow schtasks query).
         let com_tasks = ffi::TiSession::connect()
             .map(|s| s.enumerate_all_task_paths())
             .unwrap_or_default();
@@ -484,6 +495,9 @@ pub fn handle_scheduled_tasks(enabled: &crate::app::EnabledMap) {
     let schtasks = system_dir_file("schtasks.exe").ok();
 
     for task_name in task_names {
+        if !target_safety::has_strong_nvidia_named_target_context(&task_name) {
+            continue;
+        }
         let component = match task_action_decision(&task_name, enabled) {
             ActionDecision::Allowed(c) => c,
             ActionDecision::ComponentDisabled(c) => {
@@ -496,7 +510,7 @@ pub fn handle_scheduled_tasks(enabled: &crate::app::EnabledMap) {
                 );
                 continue;
             }
-            ActionDecision::NotMatched => continue, // unclassified: fail closed
+            ActionDecision::NotMatched => continue,
         };
 
         if delete_tasks {
