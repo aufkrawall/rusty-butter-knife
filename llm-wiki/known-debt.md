@@ -17,12 +17,12 @@ becomes cheap or safe to fix should be fixed and removed from this page.
 
 ## No sanitizers/fuzzing; partial destructive-path coverage
 
-As of v2.0.1 the Rust crate has 61 tests (`cargo test --all-targets`) and a
+As of v2.0.1 the Rust crate has 62 tests (`cargo test --all-targets`) and a
 Windows GitHub Actions gate that runs fmt check, build, clippy `-D warnings`,
 all tests and safe CLI smokes on pushes/pull requests. Tests include real
-Windows integration coverage for bounded subprocess capture and junction
-no-follow behavior plus pure-decision cores for service masks, TI wait state,
-CLI parsing, reporting and mutation-target safety.
+Windows integration coverage for bounded subprocess capture, junction
+no-follow behavior and named abort-event signaling plus pure-decision cores for
+service masks, TI wait state, CLI parsing, reporting and mutation-target safety.
 
 Still missing: sanitizers/fuzzing and execute-mode regression on real
 destructive targets. By policy, execute-mode regression must run only on a
@@ -72,8 +72,9 @@ marginal benefit under the normal SYSTEM/TI execution context.
   semantic matching, blocking arbitrary `Nv...` + generic `update/share/...`
   combinations.
 - v2.0.1: the unelevated launcher no longer abandons its wait and returns exit
-  3 while the elevated destructive child continues. Ctrl+C is relayed across
-  the UAC boundary and the launcher remains attached until child exit.
+  3 while the elevated destructive child continues. Ctrl+C is relayed through
+  a named manual-reset Windows event and the launcher remains attached until
+  child exit; the relay does not write privileged filesystem paths.
 - v2.0.1: `--ti-wait-seconds` uses full-string integer parsing; values such as
   `abc1` or `600junk` are rejected instead of prefix-parsed.
 - v2.0.1: `--status-file` is preserved through UAC/TI success paths.
