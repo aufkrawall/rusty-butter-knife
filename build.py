@@ -27,8 +27,6 @@ BINARY_NAME = "RustyButterKnife.exe"
 
 PE_MACHINE = {"x86_64": 0x8664, "aarch64": 0xAA64}
 
-# Rust cross-compilation targets are equally explicit and msvc-based; add the
-# matching rustup target when cross-building ARM64.
 RUST_ARCH_TARGETS = {
     "x86_64": "x86_64-pc-windows-msvc",
     "aarch64": "aarch64-pc-windows-msvc",
@@ -42,8 +40,6 @@ def pe_machine_type(path):
             dos = f.read(64)
             if len(dos) < 64 or dos[:2] != b"MZ":
                 return None
-            import struct
-
             e_lfanew = struct.unpack_from("<I", dos, 0x3C)[0]
             f.seek(e_lfanew)
             pe_sig = f.read(6)
@@ -83,7 +79,6 @@ def cargo_env():
     if os.path.isdir(cargo_bin):
         env["PATH"] = cargo_bin + os.pathsep + env.get("PATH", "")
 
-    # Remap host user and workspace paths so they are never baked into release binaries.
     remap_args = []
     user_home = os.path.expanduser("~")
     if user_home:
@@ -111,13 +106,15 @@ def find_cargo():
 
 
 def rust_target_triple(arch, cargo=None):
-    # Always explicit (see RUST_ARCH_TARGETS note); cargo host detection kept
-    # only as a sanity check that the requested triple exists.
     triple = RUST_ARCH_TARGETS[arch]
     if cargo is None:
         return triple
     res = subprocess.run([cargo, "-vV"], capture_output=True, text=True, env=cargo_env())
-    hosts = [line.split(":", 1)[1].strip() for line in (res.stdout or "").splitlines() if line.startswith("host:")]
+    hosts = [
+        line.split(":", 1)[1].strip()
+        for line in (res.stdout or "").splitlines()
+        if line.startswith("host:")
+    ]
     if hosts and hosts[0] != triple:
         print(f"[*] Cross-compiling: host={hosts[0]} -> target={triple}")
     return triple
@@ -126,18 +123,21 @@ def rust_target_triple(arch, cargo=None):
 def build_rust(arch):
     cargo = find_cargo()
     if not cargo:
-        print("[!] cargo not found. Install Rust via https://rustup.rs "
-              "or add ~/.cargo/bin to PATH.")
+        print(
+            "[!] cargo not found. Install Rust via https://rustup.rs "
+            "or add ~/.cargo/bin to PATH."
+        )
         return False
 
     triple = rust_target_triple(arch, cargo)
     if not triple:
-        print("[!] Could not determine the Rust host target triple.")
+        print("[!] Could not determine the Rust target triple.")
         return False
 
-    cmd = [cargo, "build", "--release"]
-    if triple != rust_target_triple("x86_64", cargo) or arch == "aarch64":
-        cmd += ["--target", triple]
+    # Always pass the requested target explicitly. On an ARM64 Windows host,
+    # omitting --target for --arch x86_64 would otherwise build the host ARM64
+    # binary and only fail later at PE verification instead of cross-building.
+    cmd = [cargo, "build", "--release", "--target", triple]
 
     print(f"[*] Compiling rust ({triple}): {' '.join(cmd)}")
     result = subprocess.run(cmd, cwd=BASE_DIR, env=cargo_env())
@@ -145,13 +145,7 @@ def build_rust(arch):
         print(f"[!] cargo build failed with exit code {result.returncode}")
         return False
 
-    src = os.path.join(
-        BASE_DIR, "target", triple, "release", BINARY_NAME
-    )
-    if not os.path.isfile(src):
-        src = os.path.join(
-            BASE_DIR, "target", "release", BINARY_NAME
-        )
+    src = os.path.join(BASE_DIR, "target", triple, "release", BINARY_NAME)
     if not os.path.isfile(src):
         print(f"[!] Built binary not found at {src}")
         return False
