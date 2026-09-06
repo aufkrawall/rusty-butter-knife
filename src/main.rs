@@ -187,10 +187,10 @@ fn wmain_try(args: &[String]) -> Result<i32, String> {
             None => {
                 log_line(
                     "WARN",
-                    "Elevation was declined or unavailable; continuing without administrator rights.",
+                    "Elevation handoff was declined or unavailable; continuing without administrator rights.",
                 );
                 console::out(
-                    "\nElevation was declined or unavailable; continuing without administrator rights.\n",
+                    "\nElevation handoff was declined or unavailable; continuing without administrator rights.\n",
                 );
             }
         }
@@ -308,27 +308,34 @@ fn wmain_try(args: &[String]) -> Result<i32, String> {
     }
 }
 
-fn prepare_abort_relay_file() -> String {
-    let existing = app::opts(|o| o.abort_file.clone());
-    if !existing.is_empty() {
-        let _ = std::fs::remove_file(&existing);
-        return existing;
-    }
-    let path = std::env::temp_dir().join(format!(
-        "RustyButterKnife-abort-{}.flag",
+/// Create the per-run manual-reset event used to relay Ctrl+C from the
+/// unelevated launcher to the elevated UAC child. If creation fails, the UAC
+/// handoff is refused rather than reintroducing detached-abort semantics.
+fn prepare_abort_relay_event() -> Option<(String, ffi_process::NamedAbortEvent)> {
+    let name = format!(
+        "Local\\RustyButterKnife_Abort_{}",
         util::now_unique_suffix()
-    ));
-    let path_string = path.to_string_lossy().into_owned();
-    let _ = std::fs::remove_file(&path);
-    app::opts_mut(|o| o.abort_file = path_string.clone());
-    path_string
+    );
+    let event = ffi_process::NamedAbortEvent::create(&name)?;
+    app::opts_mut(|o| o.abort_event = name.clone());
+    Some((name, event))
 }
 
-/// UAC handoff. Ctrl+C in the launcher is relayed through a per-run file. The
-/// launcher keeps waiting for the elevated process after signaling cancellation
-/// instead of returning exit 3 while destructive work is still running.
+/// UAC handoff. Ctrl+C in the launcher signals a named kernel event observed
+/// by the elevated process. The launcher keeps waiting until that process
+/// actually exits instead of reporting "aborted" while destructive work runs.
 fn relaunch_elevated_for_wizard() -> Option<i32> {
-    let abort_file = prepare_abort_relay_file();
+    let (abort_event_name, abort_event) = match prepare_abort_relay_event() {
+        Some(v) => v,
+        None => {
+            log_line(
+                "ERROR",
+                "Could not create cross-process abort event; refusing UAC destructive handoff.",
+            );
+            return None;
+        }
+    };
+
     let mut params = tasksched::effective_child_switches();
     params.push("--no-menu".into());
     params.push("--pause".into());
@@ -343,23 +350,21 @@ fn relaunch_elevated_for_wizard() -> Option<i32> {
         params.push(status_file);
     }
 
-    params.push("--abort-file".into());
-    params.push(abort_file.clone());
+    params.push("--abort-event".into());
+    params.push(abort_event_name);
     let joined = util::join_command(&params);
 
     let exe_path = sysinfo::get_exe_path().to_string_lossy().into_owned();
-    let Some(child) = ffi::shellexecute_runas(&exe_path, &joined) else {
-        let _ = std::fs::remove_file(&abort_file);
-        return None;
-    };
+    let child = ffi::shellexecute_runas(&exe_path, &joined)?;
 
     let res = child.wait_exit_code_aborting(|| {
         if app::ABORT_REQUESTED.local_requested(std::sync::atomic::Ordering::SeqCst) {
-            app::relay_abort_file();
+            let _ = abort_event.signal();
         }
+        // Never abandon the elevated child. The event requests cooperative
+        // cancellation; this launcher remains attached until child exit.
         false
     });
-    let _ = std::fs::remove_file(&abort_file);
     Some(res as i32)
 }
 
