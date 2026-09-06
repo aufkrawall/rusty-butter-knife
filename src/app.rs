@@ -12,7 +12,7 @@ use std::sync::Mutex;
 
 use crate::types::{Options, RunState};
 
-pub const RBK_VERSION: &str = "2.0.1";
+pub const RBK_VERSION: &str = "2.1.0";
 pub const GPD_VERSION: &str = RBK_VERSION;
 
 /// Scheduled-task name prefix for TrustedInstaller relaunch artifacts.

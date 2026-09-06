@@ -1,6 +1,6 @@
 # Repo Map (code map)
 
-Last cross-checked: 2026-09-06 (v2.0.1 safety hardening)
+Last cross-checked: 2026-09-06 (v2.1.0 release prep)
 
 ## Top-level
 

@@ -1,3 +1,24 @@
+## 2026-09-06 — v2.1.0 release prep; dead-code fix; CI green on main
+
+- Version bumped 2.0.1 → 2.1.0 (`Cargo.toml`, `src/app.rs` `RBK_VERSION`,
+  `Cargo.lock`). Tag `v2.1.0` is unused; `v2.0.1` was never tagged despite the
+  earlier version bump, so 2.1.0 ships the full v2.0.1 hardening plus all
+  work since `v2.0.0`.
+- Removed dead `TerminateHandle` wrapper from `ffi.rs` (superseded by
+  `VerifiedTerminateHandle` in `ffi_process.rs`); it broke the CI clippy
+  `-D warnings` gate on the previous head. Gate now green on `main` head
+  `29b3a17` (build, clippy, 62 tests, safe smokes).
+- README flag table and `--help` verified in sync; exit-code table unchanged.
+- Release chronology completed here: after `v2.0.0` (2026-09-05) the tree
+  received the v2.0.1 safety hardening (mutation-target verification,
+  strict CLI parsing, TI wait hardening — see `known-debt.md` resolved
+  findings), the guarded Windows CI/release workflow, COM task enumeration,
+  and the named-event UAC cancellation relay.
+- First CI-mediated release still pending: no `[release]` commit has ever
+  run the release job. Plan: push bump commit, wait for gate green, then an
+  empty `[release]` head commit so the gated tree and the release tree are
+  identical.
+
 ## 2026-09-05 — Removed legacy PowerShell wrapper & completed audit handoff report
 
 - Removed legacy `Run-RustyButterKnife.ps1` (native executable handles self-elevation directly).

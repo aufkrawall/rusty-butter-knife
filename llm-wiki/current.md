@@ -1,6 +1,6 @@
 # Current State
 
-Last cross-checked: 2026-09-06 (v2.0.1 safety hardening + Windows CI/release workflow)
+Last cross-checked: 2026-09-06 (v2.1.0 release prep; v2.0.1 hardening + Windows CI/release workflow)
 
 ## Summary
 
