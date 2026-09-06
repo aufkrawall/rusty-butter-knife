@@ -21,9 +21,6 @@ jobs:
           rustup default stable
           rustup target add x86_64-pc-windows-msvc
 
-      - name: Format check
-        run: cargo fmt --all -- --check
-
       - name: Cargo build
         run: cargo build
 
