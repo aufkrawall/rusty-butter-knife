@@ -41,7 +41,7 @@ static USER_QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 pub struct AbortFlag(AtomicBool);
 
 impl AbortFlag {
-    pub const fn new() -> Self {
+    const fn new() -> Self {
         Self(AtomicBool::new(false))
     }
 
