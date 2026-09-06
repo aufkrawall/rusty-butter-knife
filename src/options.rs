@@ -5,7 +5,7 @@ use crate::app;
 use crate::components::build_components;
 use crate::console;
 use crate::types::Options;
-use crate::util::{atoi_prefix, to_lower};
+use crate::util::to_lower;
 
 /// Port of `printUsage` (text kept byte-identical; build tag updated to Rust).
 pub fn print_usage() {
@@ -51,7 +51,7 @@ Component selection:\n\
   --component=Key:on/off         Toggle a specific component (repeatable).\n\
   --list-components              Print all component keys and their state, then exit.\n\n\
 Miscellaneous:\n\
-  --status-file PATH             Write child run status JSON to PATH (legacy diagnostics handoff).\n\
+  --status-file PATH             Write final run status JSON to PATH.\n\
   --log-dir PATH                 Base directory for the log file. Default: beside the executable.\n\
   --log-file PATH                Use exactly this log file; all processes of a run (launcher, elevated\n\
                                  instance, SYSTEM worker) append to it, so one run leaves one log.\n\
@@ -97,29 +97,19 @@ pub fn parse_bool_assignment(arg: &str, name: &str) -> BoolAssign {
     }
 }
 
-/// Numeric-or-error variant of `atoi_prefix`: `None` when the input carries
-/// no digits at all (e.g. `--ti-wait-seconds=abc`).
-fn seconds_value_or_none(s: &str) -> Option<i64> {
-    let has_digit = s.chars().any(|c| c.is_ascii_digit());
-    if !has_digit {
-        return None;
-    }
-    Some(atoi_prefix(s))
-}
-
 const TI_WAIT_MIN_SECS: i64 = 15;
 /// The scheduled task itself self-limits at PT2H; waiting longer than 2 h
 /// cannot observe a live child anymore, so clamp there.
 const TI_WAIT_MAX_SECS: i64 = 7200;
 
 fn apply_ti_wait_seconds(raw: &str, opt: &mut Options) -> Option<String> {
-    match seconds_value_or_none(raw) {
-        Some(v) => {
+    match raw.parse::<i64>() {
+        Ok(v) => {
             opt.ti_wait_seconds = v.clamp(TI_WAIT_MIN_SECS, TI_WAIT_MAX_SECS);
             None
         }
-        None => Some(format!(
-            "--ti-wait-seconds={raw} is not a number (allowed range {TI_WAIT_MIN_SECS}..={TI_WAIT_MAX_SECS})"
+        Err(_) => Some(format!(
+            "--ti-wait-seconds={raw} is not an integer (allowed range {TI_WAIT_MIN_SECS}..={TI_WAIT_MAX_SECS})"
         )),
     }
 }
@@ -215,15 +205,14 @@ pub fn parse_args(args: &[String]) -> Options {
             || low == "--log-dir"
             || low == "--ti-wait-seconds"
             || low == "--log-file"
+            || low == "--abort-file"
         {
             if i + 1 < args.len() {
                 i += 1;
                 let v = args[i].clone();
                 // A value that itself looks like a flag means the flag's value is
                 // missing. Record it as a problem so execute mode fails closed
-                // instead of silently swallowing the next switch (e.g.
-                // "--log-file --dry-run" would otherwise drop the dry-run
-                // request from a destructive run).
+                // instead of silently swallowing the next switch.
                 if v.starts_with('-') && v.len() > 1 {
                     opt.unknown_args.push(format!(
                         "{a} is missing its value (found flag-like '{v}' instead)"
@@ -233,6 +222,7 @@ pub fn parse_args(args: &[String]) -> Options {
                         "--status-file" => opt.status_file = v,
                         "--log-dir" => opt.log_dir_override = v,
                         "--log-file" => opt.log_file_override = v,
+                        "--abort-file" => opt.abort_file = v,
                         "--ti-wait-seconds" => {
                             if let Some(problem) = apply_ti_wait_seconds(&v, &mut opt) {
                                 opt.unknown_args.push(problem);
@@ -245,16 +235,18 @@ pub fn parse_args(args: &[String]) -> Options {
                 opt.unknown_args.push(format!("{a} is missing its value"));
                 console::err_out(&format!("Option {a} requires a value\n"));
             }
-        } else if let Some(v) = a.strip_prefix("--ti-wait-seconds=") {
+        } else if let Some(v) = low.strip_prefix("--ti-wait-seconds=") {
             if let Some(problem) = apply_ti_wait_seconds(v, &mut opt) {
                 opt.unknown_args.push(problem);
             }
-        } else if let Some(v) = a.strip_prefix("--status-file=") {
+        } else if let Some((_, v)) = a.split_once('=').filter(|(k, _)| k.eq_ignore_ascii_case("--status-file")) {
             opt.status_file = v.to_string();
-        } else if let Some(v) = a.strip_prefix("--log-file=") {
+        } else if let Some((_, v)) = a.split_once('=').filter(|(k, _)| k.eq_ignore_ascii_case("--log-file")) {
             opt.log_file_override = v.to_string();
-        } else if let Some(v) = a.strip_prefix("--log-dir=") {
+        } else if let Some((_, v)) = a.split_once('=').filter(|(k, _)| k.eq_ignore_ascii_case("--log-dir")) {
             opt.log_dir_override = v.to_string();
+        } else if let Some((_, v)) = a.split_once('=').filter(|(k, _)| k.eq_ignore_ascii_case("--abort-file")) {
+            opt.abort_file = v.to_string();
         } else if low.starts_with("--component=") {
             // Parsed after component map exists. Format: --component=Key:on/off
         } else {
@@ -272,8 +264,6 @@ pub fn parse_args(args: &[String]) -> Options {
 pub fn apply_component_args(args: &[String]) -> Vec<String> {
     let mut problems: Vec<String> = Vec::new();
     for a in args {
-        // Mixed-case spellings such as --COMPONENT=... previously fell
-        // through silently; route via the lowercased prefix.
         if !to_lower(a).starts_with("--component=") {
             continue;
         }
@@ -331,10 +321,7 @@ pub fn apply_component_args(args: &[String]) -> Vec<String> {
 pub fn apply_component_args_and_collect_problems(args: &[String]) {
     let problems = apply_component_args(args);
     for p in problems {
-        console::err_out(&format!(
-            "Invalid component selection: {p}
-"
-        ));
+        console::err_out(&format!("Invalid component selection: {p}\n"));
         app::opts_mut(|o| o.unknown_args.push(p));
     }
 }
@@ -399,17 +386,14 @@ mod tests {
             parse_bool_assignment("--PRESERVE-NVCONTAINERS=0", "--preserve-nvcontainers"),
             BoolAssign::Assigned(false)
         );
-        // Bare form has no '=' assignment.
         assert_eq!(
             parse_bool_assignment("--preserve-nvcontainers", "--preserve-nvcontainers"),
             BoolAssign::NotMine
         );
-        // Different flag never matches.
         assert_eq!(
             parse_bool_assignment("--component=x:on", "--preserve-nvcontainers"),
             BoolAssign::NotMine
         );
-        // Malformed values are now DETECTED, not silently true.
         assert_eq!(
             parse_bool_assignment("--preserve-nvcontainers=maybe", "--preserve-nvcontainers"),
             BoolAssign::Malformed("maybe".to_string())
@@ -425,22 +409,17 @@ mod tests {
         let mut opt = Options::default();
         assert!(apply_ti_wait_seconds("90", &mut opt).is_none());
         assert_eq!(opt.ti_wait_seconds, 90);
-        // Below minimum clamps up.
         assert!(apply_ti_wait_seconds("1", &mut opt).is_none());
         assert_eq!(opt.ti_wait_seconds, 15);
-        // Above the task's PT2H self-limit clamps down.
         assert!(apply_ti_wait_seconds("99999999999", &mut opt).is_none());
         assert_eq!(opt.ti_wait_seconds, 7200);
-        // Non-numeric is rejected outright.
         assert!(apply_ti_wait_seconds("abc", &mut opt).is_some());
+        assert!(apply_ti_wait_seconds("abc1", &mut opt).is_some());
+        assert!(apply_ti_wait_seconds("600junk", &mut opt).is_some());
     }
 
     #[test]
     fn flag_like_value_is_a_problem_not_a_silent_swallow() {
-        // Regression: "--log-file --dry-run" used to consume the dry-run
-        // switch as the log-file value, silently dropping the dry-run request
-        // from what stays an execute run. The flag-like value must land in
-        // unknown_args (execute mode rejects those before any mutation).
         let opts = parse_args(&["--execute".into(), "--log-file".into(), "--dry-run".into()]);
         assert!(opts.log_file_override.is_empty());
         assert_eq!(opts.unknown_args.len(), 1);
@@ -450,14 +429,11 @@ mod tests {
 
     #[test]
     fn unknown_and_malformed_args_are_collected_for_execute_rejection() {
-        // Unknown option lands in unknown_args...
         let opts = parse_args(&["--dry-run".into(), "--frobnicate".into()]);
         assert_eq!(opts.unknown_args.len(), 1);
         assert!(!opts.execute);
-        // ...and a malformed preserve assignment is collected too.
         let opts = parse_args(&["--dry-run".into(), "--preserve-nvcontainers=bogus".into()]);
         assert_eq!(opts.unknown_args.len(), 1);
-        // execute stays false: the rejection path can never fire from this.
         assert!(!opts.execute);
     }
 
@@ -469,10 +445,7 @@ mod tests {
         assert!(!before, "test expects NGX to start deselected");
         let arg = "--COMPONENT=ngx:on".to_string();
         let problems = apply_component_args(std::slice::from_ref(&arg));
-        assert!(
-            problems.is_empty(),
-            "mixed-case flag must apply: {problems:?}"
-        );
+        assert!(problems.is_empty(), "mixed-case flag must apply: {problems:?}");
         let after = crate::app::enabled(|m| *m.get("NGX").unwrap());
         assert!(after, "mixed-case flag must toggle the component");
     }
@@ -481,17 +454,13 @@ mod tests {
     fn component_problems_collected_not_swallowed() {
         crate::app::init_app(Options::default());
         initialize_component_selection();
-        // Missing separator.
         let p = apply_component_args(&["--component=NGX".into()]);
         assert_eq!(p.len(), 1, "missing state must be reported");
-        // Garbage state.
         let p = apply_component_args(&["--component=NGX:sometimes".into()]);
         assert_eq!(p.len(), 1);
-        // Unknown key lists valid keys.
         let p = apply_component_args(&["--component=Bogus:on".into()]);
         assert_eq!(p.len(), 1);
         assert!(p[0].contains("Telemetry"), "lists valid keys");
-        // A well-formed call is silent.
         let p = apply_component_args(&["--component=NGX:on".into()]);
         assert!(p.is_empty());
     }
@@ -506,5 +475,15 @@ mod tests {
         assert_eq!(opts.unknown_args.len(), 1);
         assert_eq!(opts.unknown_args[0], "--ti-wait-seconds is missing its value");
     }
-}
 
+    #[test]
+    fn internal_abort_file_parses_without_becoming_unknown() {
+        let opts = parse_args(&[
+            "--dry-run".into(),
+            "--abort-file".into(),
+            r"C:\Temp\rbk-abort.flag".into(),
+        ]);
+        assert!(opts.unknown_args.is_empty());
+        assert_eq!(opts.abort_file, r"C:\Temp\rbk-abort.flag");
+    }
+}
