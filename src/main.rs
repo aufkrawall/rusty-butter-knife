@@ -46,18 +46,14 @@ extern "system" fn console_ctrl_handler(ctrl_type: u32) -> i32 {
     match ctrl_type {
         CTRL_C_EVENT | CTRL_BREAK_EVENT | CTRL_CLOSE_EVENT => {
             app::ABORT_REQUESTED.store(true, std::sync::atomic::Ordering::SeqCst);
-            1 // TRUE: handled; stop-after-current-item semantics
+            1
         }
-        _ => 0, // FALSE: not handled
+        _ => 0,
     }
 }
 
-/// Status JSON writer (port of `writeStatusJson`). Field names and layout are
-/// a cross-version contract — do not change.
+/// Status JSON writer. Field names and layout are a cross-version contract.
 fn write_status_json(exit_code: i32, status: &str, detail: &str) {
-    // Paths that fail before option initialization (e.g. a panic during early
-    // parsing) have no status file and no log path; the FATAL handler must
-    // not panic here itself.
     if !app::opts_initialized() {
         return;
     }
@@ -84,19 +80,13 @@ fn write_status_json(exit_code: i32, status: &str, detail: &str) {
     );
     if let Err(e) = std::fs::write(path, json) {
         console::err_out(&format!(
-            "ERROR: failed to write status file {}: {}
-",
+            "ERROR: failed to write status file {}: {}\n",
             path.display(),
             e
         ));
     }
 }
 
-/// Port of the wmain try-block. Errors returned as Err(String) map onto the
-/// C++ catch(std::exception) path. (The former Early/Completed split existed
-/// only to skip the pause block; pause is now an explicit finalization rule
-/// applied uniformly — fixing the audit's pause-flow bug where TI orchestration
-/// paths closed the elevated wizard window despite --pause.)
 fn wmain_try(args: &[String]) -> Result<i32, String> {
     let opts: Options = parse_args(args);
 
@@ -130,8 +120,6 @@ fn wmain_try(args: &[String]) -> Result<i32, String> {
 
     apply_component_args_and_collect_problems(args);
 
-    // Wizard default keeps the NVIDIA driver-update/profile-updater stack:
-    // deselect UpdateAndProfileUpdater unless explicitly re-enabled.
     if app::opts(|o| o.wizard_defaults) {
         app::enabled_mut(|m| {
             if let Some(v) = m.get_mut("UpdateAndProfileUpdater") {
@@ -154,8 +142,7 @@ fn wmain_try(args: &[String]) -> Result<i32, String> {
         "INFO",
         &format!("Run log (all stages of this run append to this single file): {log_path_display}"),
     );
-    // CLI argument gate (audit: execute mode must reject malformed or
-    // unknown inputs BEFORE any mutation). Dry runs stay lenient.
+
     let bad_args = app::opts(|o| o.unknown_args.clone());
     if !bad_args.is_empty() {
         let execute_mode = app::opts(|o| o.execute);
@@ -170,10 +157,7 @@ fn wmain_try(args: &[String]) -> Result<i32, String> {
             }
         }
         if execute_mode {
-            console::out(
-                "Run with --help to see valid arguments.
-",
-            );
+            console::out("Run with --help to see valid arguments.\n");
             write_status_json(
                 EXIT_BAD_ARGS,
                 "failed",
@@ -183,10 +167,6 @@ fn wmain_try(args: &[String]) -> Result<i32, String> {
         }
     }
 
-    // Bare double-click launch in EXECUTE mode without elevation: the wizard
-    // has been confirmed interactively at this point, so hand off to an
-    // elevated instance via UAC. Must happen before the single-instance mutex
-    // is taken, otherwise the elevated child would see it as held.
     if app::opts(|o| o.wizard_defaults && o.execute && !o.ti_child)
         && !sysinfo::is_admin()
         && !is_trusted_installer()
@@ -215,15 +195,10 @@ fn wmain_try(args: &[String]) -> Result<i32, String> {
         }
     }
 
-    // Refuse overlapping destructive runs; they would race over files,
-    // services and pending-reboot registrations.
     let _mutex_guard = if app::opts(|o| o.execute && !o.ti_child) {
         let (guard, existed) =
             ffi::create_global_mutex("Global\\RustyButterKnife_Execute_Mutex");
         if !guard.held() {
-            // Fail closed: without the mutex, concurrent destructive runs
-            // would race over files, services and pending-reboot
-            // registrations. Dry runs are unaffected.
             log_line(
                 "FATAL",
                 &format!(
@@ -258,9 +233,6 @@ fn wmain_try(args: &[String]) -> Result<i32, String> {
         && !is_trusted_installer();
     if ti_preflight {
         if !app::opts(|o| o.attempt_ti_relaunch) {
-            // Audit: with --no-ti-relaunch and no admin fallback there is no
-            // path into a privileged run; exiting via run_cleanup's generic
-            // error produced exit code 1 instead of the documented TI code.
             log_line(
                 "FATAL",
                 "Destructive execution requires TrustedInstaller, but relaunch was disabled (--no-ti-relaunch) and --allow-admin-fallback was not specified.",
@@ -276,9 +248,10 @@ fn wmain_try(args: &[String]) -> Result<i32, String> {
             let ti_result = tasksched::attempt_trusted_installer_relaunch();
             if ti_result.child_status_seen && ti_result.child_succeeded {
                 log_line(
-                "INFO",
-                "Parent process finished after TI child completion. Everything (including the worker's report) is in the shared run log.",
-            );
+                    "INFO",
+                    "Parent process finished after TI child completion. Everything (including the worker's report) is in the shared run log.",
+                );
+                write_status_json(EXIT_OK, "ok", "TI child completed");
                 return Ok(EXIT_OK);
             }
             if ti_result.child_status_seen {
@@ -294,9 +267,6 @@ fn wmain_try(args: &[String]) -> Result<i32, String> {
                 return Ok(EXIT_TI_CHILD_FAILED);
             }
             if ti_result.aborted {
-                // The wait was cancelled (Ctrl+C); the scheduled task was
-                // already stopped and deleted. Report the documented abort
-                // outcome instead of a relaunch failure.
                 write_status_json(EXIT_ABORTED, "aborted", &ti_result.detail);
                 return Ok(EXIT_ABORTED);
             }
@@ -307,11 +277,11 @@ fn wmain_try(args: &[String]) -> Result<i32, String> {
                     format!(" ({})", ti_result.detail)
                 };
                 log_line(
-                "FATAL",
-                &format!(
-                    "TrustedInstaller relaunch failed{detail_suffix} and --allow-admin-fallback was not specified."
-                ),
-            );
+                    "FATAL",
+                    &format!(
+                        "TrustedInstaller relaunch failed{detail_suffix} and --allow-admin-fallback was not specified."
+                    ),
+                );
                 write_status_json(
                     EXIT_TI_RELAUNCH_FAILED,
                     "failed",
@@ -337,39 +307,64 @@ fn wmain_try(args: &[String]) -> Result<i32, String> {
     }
 }
 
-/// Port of `relaunchElevatedForWizard`. Returns child exit code when the UAC
-/// relaunch succeeded; None when elevation was declined/unavailable.
+fn prepare_abort_relay_file() -> String {
+    let existing = app::opts(|o| o.abort_file.clone());
+    if !existing.is_empty() {
+        let _ = std::fs::remove_file(&existing);
+        return existing;
+    }
+    let path = std::env::temp_dir().join(format!(
+        "RustyButterKnife-abort-{}.flag",
+        util::now_unique_suffix()
+    ));
+    let path_string = path.to_string_lossy().into_owned();
+    let _ = std::fs::remove_file(&path);
+    app::opts_mut(|o| o.abort_file = path_string.clone());
+    path_string
+}
+
+/// UAC handoff. Ctrl+C in the launcher is relayed through a per-run file. The
+/// launcher keeps waiting for the elevated process after signaling cancellation
+/// instead of returning exit 3 while destructive work is still running.
 fn relaunch_elevated_for_wizard() -> Option<i32> {
+    let abort_file = prepare_abort_relay_file();
     let mut params = tasksched::effective_child_switches();
     params.push("--no-menu".into());
     params.push("--pause".into());
-    // All stages append to this same log file.
+
     let log_file = app::run(|s| s.log_path.to_string_lossy().into_owned());
     params.push("--log-file".into());
     params.push(log_file);
+
+    let status_file = app::opts(|o| o.status_file.clone());
+    if !status_file.is_empty() {
+        params.push("--status-file".into());
+        params.push(status_file);
+    }
+
+    params.push("--abort-file".into());
+    params.push(abort_file.clone());
     let joined = util::join_command(&params);
 
     let exe_path = sysinfo::get_exe_path().to_string_lossy().into_owned();
-    let child = ffi::shellexecute_runas(&exe_path, &joined)?;
-    let res = child
-        .wait_exit_code_aborting(|| app::ABORT_REQUESTED.load(std::sync::atomic::Ordering::SeqCst));
-    if res == 0xFFFF_FFFD {
-        // Abandoned because of Ctrl+C: record the abort so the run exits
-        // through the documented aborted path instead of a fake success.
-        log_line(
-            "WARN",
-            "Abandoned wait for elevated instance after abort request.",
-        );
-        app::run_mut(|s| s.aborted = true);
-        return Some(app::EXIT_ABORTED);
-    }
+    let Some(child) = ffi::shellexecute_runas(&exe_path, &joined) else {
+        let _ = std::fs::remove_file(&abort_file);
+        return None;
+    };
+
+    let res = child.wait_exit_code_aborting(|| {
+        if app::ABORT_REQUESTED.local_requested(std::sync::atomic::Ordering::SeqCst) {
+            app::relay_abort_file();
+        }
+        // Do not abandon the child. Cancellation is cooperative across the
+        // UAC boundary and the launcher remains attached until it exits.
+        false
+    });
+    let _ = std::fs::remove_file(&abort_file);
     Some(res as i32)
 }
 
-/// Pause helper mirroring the tail of wmain.
 fn maybe_pause_on_exit() {
-    // --help/--version/--list-components exit before option initialization;
-    // they carry no menu/pause state by definition.
     if !app::opts_initialized() {
         return;
     }
@@ -389,9 +384,6 @@ fn maybe_pause_on_exit() {
 fn main() {
     ffi::set_console_ctrl_handler(console_ctrl_handler);
 
-    // args_os (not args): a non-UTF-8 argument must not panic the process
-    // before the catch_unwind FATAL gate exists; lossy conversion matches
-    // the program's general from_utf16_lossy style.
     let args: Vec<String> = std::env::args_os()
         .skip(1)
         .map(|a| a.to_string_lossy().into_owned())
@@ -402,14 +394,12 @@ fn main() {
     let exit_code = match result {
         Ok(Ok(code)) => code,
         Ok(Err(msg)) => {
-            // catch(std::exception) — message available.
             logging::log_line("FATAL", &msg);
             let _ = std::panic::catch_unwind(report::write_report);
             write_status_json(EXIT_FATAL_EXCEPTION, "fatal", &msg);
             EXIT_FATAL_EXCEPTION
         }
         Err(_payload) => {
-            // catch(...) — unknown fatal exception.
             logging::log_line("FATAL", "Unknown fatal exception.");
             let _ = std::panic::catch_unwind(report::write_report);
             write_status_json(EXIT_FATAL_UNKNOWN, "fatal", "unknown fatal exception");
@@ -417,9 +407,6 @@ fn main() {
         }
     };
 
-    // Pause is a uniform finalization rule (audit pause-flow fix): applied to
-    // every outcome so an elevated wizard instance keeps its window open even
-    // on early orchestration paths such as TI relaunch success/failure.
     maybe_pause_on_exit();
     std::process::exit(exit_code);
 }
