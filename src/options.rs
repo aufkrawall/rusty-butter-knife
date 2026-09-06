@@ -39,7 +39,7 @@ Core switches:\n\
 TrustedInstaller behavior:\n\
   --no-ti-relaunch                Do not attempt automatic TrustedInstaller scheduled-task relaunch.\n\
   --allow-admin-fallback          Permit destructive execution as Administrator if TI relaunch fails/skipped.\n\
-  --ti-wait-seconds N             Parent wait timeout for TI child. Default 600;
+  --ti-wait-seconds N             Parent wait timeout for TI child. Default 600;\n\
                                   values are clamped to 15..=7200 seconds.\n\
                                   Component selections made in the interactive menu are forwarded to the elevated child.\n\n\
 Optional component inclusions:\n\
@@ -205,7 +205,7 @@ pub fn parse_args(args: &[String]) -> Options {
             || low == "--log-dir"
             || low == "--ti-wait-seconds"
             || low == "--log-file"
-            || low == "--abort-file"
+            || low == "--abort-event"
         {
             if i + 1 < args.len() {
                 i += 1;
@@ -222,7 +222,7 @@ pub fn parse_args(args: &[String]) -> Options {
                         "--status-file" => opt.status_file = v,
                         "--log-dir" => opt.log_dir_override = v,
                         "--log-file" => opt.log_file_override = v,
-                        "--abort-file" => opt.abort_file = v,
+                        "--abort-event" => opt.abort_event = v,
                         "--ti-wait-seconds" => {
                             if let Some(problem) = apply_ti_wait_seconds(&v, &mut opt) {
                                 opt.unknown_args.push(problem);
@@ -239,14 +239,26 @@ pub fn parse_args(args: &[String]) -> Options {
             if let Some(problem) = apply_ti_wait_seconds(v, &mut opt) {
                 opt.unknown_args.push(problem);
             }
-        } else if let Some((_, v)) = a.split_once('=').filter(|(k, _)| k.eq_ignore_ascii_case("--status-file")) {
+        } else if let Some((_, v)) = a
+            .split_once('=')
+            .filter(|(k, _)| k.eq_ignore_ascii_case("--status-file"))
+        {
             opt.status_file = v.to_string();
-        } else if let Some((_, v)) = a.split_once('=').filter(|(k, _)| k.eq_ignore_ascii_case("--log-file")) {
+        } else if let Some((_, v)) = a
+            .split_once('=')
+            .filter(|(k, _)| k.eq_ignore_ascii_case("--log-file"))
+        {
             opt.log_file_override = v.to_string();
-        } else if let Some((_, v)) = a.split_once('=').filter(|(k, _)| k.eq_ignore_ascii_case("--log-dir")) {
+        } else if let Some((_, v)) = a
+            .split_once('=')
+            .filter(|(k, _)| k.eq_ignore_ascii_case("--log-dir"))
+        {
             opt.log_dir_override = v.to_string();
-        } else if let Some((_, v)) = a.split_once('=').filter(|(k, _)| k.eq_ignore_ascii_case("--abort-file")) {
-            opt.abort_file = v.to_string();
+        } else if let Some((_, v)) = a
+            .split_once('=')
+            .filter(|(k, _)| k.eq_ignore_ascii_case("--abort-event"))
+        {
+            opt.abort_event = v.to_string();
         } else if low.starts_with("--component=") {
             // Parsed after component map exists. Format: --component=Key:on/off
         } else {
@@ -477,13 +489,16 @@ mod tests {
     }
 
     #[test]
-    fn internal_abort_file_parses_without_becoming_unknown() {
+    fn internal_abort_event_parses_without_becoming_unknown() {
         let opts = parse_args(&[
             "--dry-run".into(),
-            "--abort-file".into(),
-            r"C:\Temp\rbk-abort.flag".into(),
+            "--abort-event".into(),
+            r"Local\RustyButterKnife_Abort_abcd-1234".into(),
         ]);
         assert!(opts.unknown_args.is_empty());
-        assert_eq!(opts.abort_file, r"C:\Temp\rbk-abort.flag");
+        assert_eq!(
+            opts.abort_event,
+            r"Local\RustyButterKnife_Abort_abcd-1234"
+        );
     }
 }
