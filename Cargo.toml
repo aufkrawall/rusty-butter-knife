@@ -1,6 +1,6 @@
 [package]
 name = "rusty-butter-knife"
-version = "2.0.0"
+version = "2.0.1"
 edition = "2021"
 description = "Native Windows NVIDIA driver post-install debloater"
 license = "MIT"
@@ -10,7 +10,7 @@ name = "RustyButterKnife"
 path = "src/main.rs"
 
 [dependencies]
-# Raw Win32 FFI (used only inside src/ffi.rs behind safe wrappers).
+# Raw Win32 FFI (used only inside the ffi* boundary modules).
 windows-sys = { version = "0.60", features = [
     "Win32_Foundation",
     "Win32_Storage_FileSystem",
@@ -30,7 +30,7 @@ windows-sys = { version = "0.60", features = [
     "Win32_System_IO",
     "Win32_System_Registry",
 ] }
-# Generated COM interface bindings (used only inside src/ffi.rs).
+# Generated COM interface bindings (used only inside src/ffi_tasksched.rs).
 windows = { version = "0.62", features = [
     "Win32_System_Com",
     "Win32_System_Ole",
@@ -42,4 +42,3 @@ windows = { version = "0.62", features = [
 opt-level = 2
 lto = "thin"
 codegen-units = 1
-
