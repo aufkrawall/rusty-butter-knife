@@ -1,4 +1,5 @@
-//! Process identity/termination bindings — part of the FFI boundary family.
+//! Process identity/termination and UAC-cancellation bindings — part of the
+//! FFI boundary family.
 //!
 //! Destructive process termination verifies the live image through the SAME
 //! handle used to terminate it. This closes basename false positives and the
@@ -9,9 +10,11 @@
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
 use windows_sys::Win32::Storage::FileSystem::SYNCHRONIZE;
 use windows_sys::Win32::System::Threading::{
-    OpenProcess, QueryFullProcessImageNameW, TerminateProcess, WaitForSingleObject,
-    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
+    CreateEventW, OpenEventW, OpenProcess, QueryFullProcessImageNameW, SetEvent, TerminateProcess,
+    WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
 };
+
+const WAIT_OBJECT_0: u32 = 0;
 
 const KNOWN_KILLABLE_PROCESS_NAMES: &[&str] = &[
     "nvtelemetrycontainer.exe",
@@ -158,9 +161,51 @@ impl VerifiedTerminateHandle {
     }
 
     pub fn wait_ms(&self, ms: u32) -> bool {
-        const WAIT_OBJECT_0: u32 = 0;
         unsafe { WaitForSingleObject(self.0.0, ms) == WAIT_OBJECT_0 }
     }
+}
+
+/// Manual-reset named event owned by the unelevated launcher while its UAC
+/// child is running. The console handler itself remains atomic-only; normal
+/// wait code signals this event after observing the local abort flag.
+pub struct NamedAbortEvent(HANDLE);
+
+impl NamedAbortEvent {
+    pub fn create(name: &str) -> Option<Self> {
+        let wide = crate::ffi::wide(name);
+        let handle = unsafe { CreateEventW(std::ptr::null(), 1, 0, wide.as_ptr()) };
+        if handle.is_null() {
+            None
+        } else {
+            Some(Self(handle))
+        }
+    }
+
+    pub fn signal(&self) -> bool {
+        unsafe { SetEvent(self.0) != 0 }
+    }
+}
+
+impl Drop for NamedAbortEvent {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe { CloseHandle(self.0) };
+        }
+    }
+}
+
+/// Observe a named abort event without retaining a process-global kernel
+/// handle. Missing/inaccessible events fail closed toward "not aborted"; the
+/// elevated child continues unless its own local Ctrl+C flag is also set.
+pub fn named_abort_event_is_signaled(name: &str) -> bool {
+    let wide = crate::ffi::wide(name);
+    let handle = unsafe { OpenEventW(SYNCHRONIZE, 0, wide.as_ptr()) };
+    if handle.is_null() {
+        return false;
+    }
+    let signaled = unsafe { WaitForSingleObject(handle, 0) == WAIT_OBJECT_0 };
+    unsafe { CloseHandle(handle) };
+    signaled
 }
 
 #[cfg(test)]
@@ -209,5 +254,17 @@ mod tests {
         ));
         assert!(!has_strong_nvidia_named_target_context("NvBackup Update"));
         assert!(!has_strong_nvidia_named_target_context(r"\NvCache\Share cleanup"));
+    }
+
+    #[test]
+    fn named_abort_event_round_trip() {
+        let name = format!(
+            r"Local\RustyButterKnife_Abort_{}",
+            crate::util::now_unique_suffix()
+        );
+        let event = NamedAbortEvent::create(&name).expect("create named abort event");
+        assert!(!named_abort_event_is_signaled(&name));
+        assert!(event.signal());
+        assert!(named_abort_event_is_signaled(&name));
     }
 }
