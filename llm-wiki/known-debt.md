@@ -18,11 +18,13 @@ becomes cheap or safe to fix should be fixed and removed from this page.
 ## No sanitizers/fuzzing; partial destructive-path coverage
 
 As of v2.0.1 the Rust crate has 62 tests (`cargo test --all-targets`) and a
-Windows GitHub Actions gate that runs fmt check, build, clippy `-D warnings`,
-all tests and safe CLI smokes on pushes/pull requests. Tests include real
-Windows integration coverage for bounded subprocess capture, junction
-no-follow behavior and named abort-event signaling plus pure-decision cores for
-service masks, TI wait state, CLI parsing, reporting and mutation-target safety.
+Windows GitHub Actions gate that runs build, clippy `-D warnings`, all tests and
+safe CLI smokes on pushes/pull requests. Existing source is not guaranteed
+whole-tree rustfmt-clean; the project intentionally avoids unrelated formatter
+churn. Tests include real Windows integration coverage for bounded subprocess
+capture, junction no-follow behavior and named abort-event signaling plus
+pure-decision cores for service masks, TI wait state, CLI parsing, reporting
+and mutation-target safety.
 
 Still missing: sanitizers/fuzzing and execute-mode regression on real
 destructive targets. By policy, execute-mode regression must run only on a
