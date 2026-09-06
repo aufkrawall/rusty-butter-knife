@@ -5,7 +5,7 @@ Last cross-checked: 2026-09-06 (v2.0.1 safety hardening + Windows CI/release wor
 ## Summary
 
 - Native Windows NVIDIA driver post-install debloater. Pure Rust crate at repo
-  root (`src/`, 61 unit/integration tests after the v2.0.1 additions, unsafe
+  root (`src/`, 62 unit/integration tests after the v2.0.1 additions, unsafe
   confined to the `ffi*` module family). C++ legacy version is gone.
   `python build.py` or `cargo build --release` builds `RustyButterKnife.exe`
   with explicit target triples, PE-machine verification and compiler path
@@ -24,16 +24,17 @@ Last cross-checked: 2026-09-06 (v2.0.1 safety hardening + Windows CI/release wor
     basename false positives and PID-reuse retargeting.
   - Service/task mutations require a stronger NVIDIA anchor before broad
     semantic terms such as update/share/broadcast can classify a target.
-  - UAC cancellation is relayed across the process boundary and the launcher
-    stays attached until the elevated child actually exits; it cannot report
-    exit 3 while destructive child work continues.
+  - UAC cancellation uses a named manual-reset Windows event. The unelevated
+    launcher signals it after Ctrl+C and remains attached until the elevated
+    child actually exits; it cannot report exit 3 while destructive child work
+    continues, and privileged cancellation does not require filesystem writes.
   - Subprocess capture is hard-bounded (`ffi_capture.rs`), traversal never
     crosses reparse points (`fsutil.rs`), and service access is least-privilege
     with bounded stop convergence.
   - Execute mode rejects malformed/unknown CLI input before mutation; numeric
     TI wait values require full-string integer parsing.
-- `.github/workflows/windows-ci-release.yml` now provides a Windows-native gate
-  on pushes/PRs: fmt check, build, clippy `-D warnings`, all tests and safe CLI
+- `.github/workflows/windows-ci-release.yml` provides a Windows-native gate on
+  pushes/PRs: fmt check, build, clippy `-D warnings`, all tests and safe CLI
   smokes. A marked merge commit on `main` (`[release]`) builds the verified
   x86_64 executable and publishes the versioned GitHub release.
 
