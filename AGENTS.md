@@ -16,16 +16,18 @@ Copyright (c) 2026 aufkrawall
   VM with rollback available.
 - **Development loop:** stay in `cargo build` while iterating. Close substantial
   changes with one gate:
-  1. `cargo fmt --all -- --check`
-  2. `cargo build`
-  3. `cargo clippy --all-targets -- -D warnings`
-  4. `cargo test --all-targets`
-  5. when behavior/CLI changed, one safe smoke such as
+  1. `cargo build`
+  2. `cargo clippy --all-targets -- -D warnings`
+  3. `cargo test --all-targets`
+  4. when behavior/CLI changed, one safe smoke such as
      `./target/debug/RustyButterKnife.exe --list-components`, `--version`, or
      `--help`; use `--dry-run` only when candidate/report behavior needs review.
 - `.github/workflows/windows-ci-release.yml` mirrors this gate on Windows for
   pushes and pull requests. CI does **not** replace sacrificial-VM execute-mode
   testing, sanitizers, or fuzzing; those remain coverage gaps.
+- Existing source is not guaranteed whole-tree rustfmt-clean. Do not reformat
+  unrelated files merely to impose formatter output; keep edits scoped to the
+  task and surrounding style.
 - CLI/help changes must be checked against the README flag table.
 - Fix every warning introduced by a change. Warning-free build/clippy is part
   of the contract.
@@ -67,9 +69,9 @@ Copyright (c) 2026 aufkrawall
 
 ## Build, diagnostics, and tests
 
-- Current verification consists of Windows-native formatting/build/clippy/tests
-  plus safe CLI smoke. The crate includes unit tests and real-Windows integration
-  tests for bounded process capture, junction/reparse behavior, task/service
+- Current verification consists of Windows-native build/clippy/tests plus safe
+  CLI smoke. The crate includes unit tests and real-Windows integration tests
+  for bounded process capture, junction/reparse behavior, task/service
   decisions, CLI parsing, reporting, mutation-target safety and cross-process
   abort-event signaling.
 - No sanitizer/fuzzer stage exists yet. Destructive Win32 call sites still need
