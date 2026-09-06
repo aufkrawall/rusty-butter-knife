@@ -1,11 +1,12 @@
 # Known and Accepted Debt
 
-Last verified: 2026-09-05
+Last verified: 2026-09-06
 
 Primary sources:
 - `AGENTS.md`
-- `build.py` (ARCH_TARGETS / OUTPUT handling)
-- `GreenPostInstallDebloatNative.cpp`
+- `.github/workflows/windows-ci-release.yml`
+- `build.py`
+- current Rust source under `src/`
 
 ## Purpose
 
@@ -14,112 +15,81 @@ audits do not re-derive it and later agents do not "fix" it without weighing
 the same trade-off. Items here are *recorded*, not endorsed. Anything that
 becomes cheap or safe to fix should be fixed and removed from this page.
 
-## No CI, no sanitizers, partial destructive-path coverage
+## No sanitizers/fuzzing; partial destructive-path coverage
 
-Since 2026-08-26 the Rust crate has 57 tests (`cargo test --all-targets`),
-including REAL-WINDOWS integration tests (subprocess capture bounds,
-junction no-follow behavior) and pure-decision cores extracted for the
-service masks, TI wait state machine, CLI parsing and post-run reporting.
-Still missing: a CI runner, sanitizers/fuzzing, and execute-mode regression
-on real destructive targets (forbidden by policy; first execute regressions
-must run on a sacrificial VM).
+As of v2.0.1 the Rust crate has 61 tests (`cargo test --all-targets`) and a
+Windows GitHub Actions gate that runs fmt check, build, clippy `-D warnings`,
+all tests and safe CLI smokes on pushes/pull requests. Tests include real
+Windows integration coverage for bounded subprocess capture and junction
+no-follow behavior plus pure-decision cores for service masks, TI wait state,
+CLI parsing, reporting and mutation-target safety.
 
-Why partly accepted: matching/report logic is now decoupled and tested, but
-the truly destructive Win32 call sites remain covered only by dry-run smoke
-verification. To resolve further: VM-based harness executing the tool with
-synthetic fixtures.
+Still missing: sanitizers/fuzzing and execute-mode regression on real
+destructive targets. By policy, execute-mode regression must run only on a
+sacrificial VM. Matching/report logic is well covered, but truly destructive
+Win32 call sites are still exercised only indirectly or via dry-run. A future
+improvement would be a disposable VM harness with synthetic NVIDIA-like
+fixtures and snapshot rollback.
 
-## Single ~2500-line translation unit (LEGACY C++ ONLY)
+## Scheduled-task CSV fallback heuristic
 
-All C++ lives in one file; compile time is still fine but growing, and edits
-touch one giant diff surface.
+The fast path enumerates Task Scheduler through COM. If COM enumeration fails,
+the `schtasks /Query /FO CSV` fallback picks the first CSV field starting with
+`\` because column order varies between Windows versions. A UNC-style hostname
+in an unexpected field could theoretically confuse that fallback. Not observed
+on tested systems, and the COM path normally avoids it entirely.
 
-Why accepted: deliberate architecture choice of the legacy implementation —
-trivial distribution/build story (`python build.py`, one source file).
-The file is grandfathered as historical reference and must NOT grow.
-Per user directive, source files target ~500–800 lines: the Rust port
-(`src/`) is split into modules under that ceiling, and any new source file
-must respect it. Do not split the legacy .cpp.
+## `--list-components` shows defaults before component overrides
 
-## Both architectures write the same output filename
+`--list-components` exits before `--component=` arguments are applied. This is
+kept as documented historical behavior. Changing it would be straightforward
+but would alter an existing CLI contract for little practical benefit.
 
-`build.py --arch aarch64` overwrites `GreenPostInstallDebloatNative.exe`
-(the x86_64 binary). `build.py` prints a `[!]` reminder but does not prevent
-it.
+## DriverStore package-interior payload deletion
 
-Why accepted: keeps paths simple for a single-artifact workflow. To resolve:
-per-arch output names or an output flag would be needed; not worth it while
-ARM64 builds are occasional.
+Opt-in components (NGX/HDAudio/CaptureSDK/NvWMI) intentionally match payload
+files inside DriverStore packages. Deleting those files corrupts the package
+copy while leaving active installed copies untouched. README discloses this.
+Whole package roots remain protected and recursive DriverStore deletion is
+allow-listed. Default-on AnselCamera versus historical `NvCamera*.dll` inside
+old nv_dispi packages remains a version-dependent latent risk of the same
+class.
 
-## Function name `writeCandidatesCsv` is historical
+## External ownership utilities
 
-It appends the candidates table INTO the unified run log; no separate CSV
-file is produced (README correctly says none are created).
+`takeown.exe`/`icacls.exe` are still used for ownership changes. The locale
+Yes-letter winner is memoized process-wide, but native security APIs would
+remove the external-process timeout surface entirely. Deferred because adding
+AdjustTokenPrivileges/SeTakeOwnership code expands the unsafe boundary for
+marginal benefit under the normal SYSTEM/TI execution context.
 
-Why accepted: renaming churns the file for no behavioral gain; the comment
-inside explains it. If touched anyway, a rename to e.g.
-`appendCandidatesToLog` is welcome.
+## Resolved findings — do not re-raise without new evidence
 
-## Falsified findings — do not re-raise
-
-- "README claims no CSV files but code has writeCandidatesCsv()" — checked
-  2026-08-23, confirmed not a defect: the function writes into the run log
-  only (see debt entry above).
-- "Cargo.toml declares unused windows-sys features" — checked 2026-08-23,
-  falsified as a cleanup: windows-sys 0.60 cfg-gates `ReadFile` behind
-  `Win32_System_IO` and `ShellExecuteExW`/`SHELLEXECUTEINFOW` behind
-  `Win32_System_Registry`; every declared feature is load-bearing.
-
-## Audit leftovers (2026-08-23, weighed and accepted)
-
-Deferred findings from the full-repo audit, each deliberately accepted.
-Items resolved in subsequent passes are listed below:
-
-- Scheduled-task matching picks the first CSV field starting with `\` as the
-  task path because schtasks `/FO CSV` column order varies between versions;
-  a UNC-style hostname in column 1 could theoretically confuse it. Not
-  observed on any tested system.
-- `--list-components` prints default component states before
-  `--component=` args are applied (wmain ordering parity with the legacy
-  C++). Treated as documented behavior.
-- Opt-in components (NGX/HDAudio/CaptureSDK/NvWMI) intentionally match
-  payload files inside DriverStore packages; deleting them corrupts those
-  packages while leaving active driver copies untouched. Now disclosed in
-  README safety notes; behavior kept because these components' targets live
-  exclusively inside packages. Default-on AnselCamera vs historical
-  `NvCamera*.dll` inside old nv_dispi packages remains a version-dependent
-  latent risk of the same class.
-
-Resolved in subsequent audit passes (recorded here so they are not re-derived):
-
-- `is_trusted_installer()` no longer substring-matches; it accepts exactly
-  `NT SERVICE\TrustedInstaller` or its well-known service SID
-  (S-1-5-80-956008885-…). Fail direction stays safe (false negative only
-  triggers an extra relaunch attempt / WARN line).
-- The llvm-mingw archive SHA256 is now pinned in `build.py`
-  (`LLVM_MINGW_SHA256`, taken from the GitHub release asset digest) and
-  verified automatically on every fresh download; `--sha256` overrides.
-- Service handles opened with rights matched to requested operations:
-  implemented on 2026-08-26 via `ffi_services::desired_access_for_ops` with
-  exact-mask unit tests.
-- COM VARIANT helpers in `ffi_tasksched.rs`: resolved 2026-09-05 via
-  `VariantGuard` RAII struct that invokes `VariantClear` on drop, eliminating
-  transient process-lifetime BSTR leaks.
-- `console::err_out` LF normalization: resolved 2026-09-05 via
-  `encode_crlf_utf16` shared with `console::out`, preventing missing CRs on
-  Windows console without doubling pre-existing CRLF.
-
-## Audit remediation leftovers (2026-08-26, weighed and accepted)
-
-From the GreenPostInstallDebloatNative — Audit Handoff Summary pass:
-
-- takeown/icacls external utilities are still used for ownership changes.
-  The locale yes-letter winner is memoized process-wide (single round-trip
-  per candidate after discovery), but native SID/security APIs would remove
-  the 120 s subprocess timeouts entirely. Deferred: substantial unsafe
-  surface (AdjustTokenPrivileges + SeTakeOwnership) for marginal gain under
-  TrustedInstaller context.
-- Legacy C++ retains ALL pre-2026-08-26 defects (capture hang, combined
-  service rights, fire-and-forget stop). It is NO LONGER default-built or
-  distributed (`python build.py --variant cpp|all` keeps it buildable);
-  parity fixes in the reference TU would violate its must-not-grow rule.
+- v2.0.1: process termination no longer trusts generic basename substring
+  matches. Only explicit known process names reach the mutation path, and the
+  live full image is verified through the same handle used for termination.
+- v2.0.1: service/task mutation requires a strong NVIDIA anchor in addition to
+  semantic matching, blocking arbitrary `Nv...` + generic `update/share/...`
+  combinations.
+- v2.0.1: the unelevated launcher no longer abandons its wait and returns exit
+  3 while the elevated destructive child continues. Ctrl+C is relayed across
+  the UAC boundary and the launcher remains attached until child exit.
+- v2.0.1: `--ti-wait-seconds` uses full-string integer parsing; values such as
+  `abc1` or `600junk` are rejected instead of prefix-parsed.
+- v2.0.1: `--status-file` is preserved through UAC/TI success paths.
+- v2.0.1: `build.py` always passes the explicit requested Rust target, so an
+  x86_64 build on an ARM64 Windows host actually cross-compiles rather than
+  relying on PE verification to reject a wrong-host artifact.
+- `is_trusted_installer()` exactly matches `NT SERVICE\TrustedInstaller` or its
+  well-known service SID; substring identity matching is gone.
+- Service handles use least-privilege operation-specific access masks with
+  exact-mask tests.
+- COM VARIANT BSTR ownership is RAII-managed by `VariantGuard` +
+  `VariantClear`.
+- Console output normalizes bare LF to CRLF without doubling existing CRLF.
+- Subprocess capture is bounded and does not block on descendant-inherited
+  stdout handles.
+- Recursive filesystem operations do not traverse reparse points, including a
+  reparse point used as the traversal root.
+- Execute mode rejects malformed/unknown CLI arguments before any mutation.
+- Build artifacts are PE-machine verified and compiler paths are remapped.
