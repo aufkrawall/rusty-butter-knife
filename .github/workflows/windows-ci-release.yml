@@ -1,0 +1,94 @@
+name: Windows CI and release
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  gate:
+    name: Build, clippy, test
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Select stable Rust
+        shell: pwsh
+        run: |
+          rustup default stable
+          rustup target add x86_64-pc-windows-msvc
+
+      - name: Cargo build
+        run: cargo build
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test --all-targets
+
+      - name: Safe CLI smoke
+        shell: pwsh
+        run: |
+          .\target\debug\RustyButterKnife.exe --list-components
+          .\target\debug\RustyButterKnife.exe --version
+          .\target\debug\RustyButterKnife.exe --help
+
+  release:
+    name: Publish tagged executable
+    needs: gate
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      contains(github.event.head_commit.message, '[release]')
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Select stable Rust
+        shell: pwsh
+        run: |
+          rustup default stable
+          rustup target add x86_64-pc-windows-msvc
+
+      - name: Read package version
+        id: version
+        shell: pwsh
+        run: |
+          $line = Select-String -Path Cargo.toml -Pattern '^version = "([^"]+)"$' | Select-Object -First 1
+          if (-not $line) { throw 'Could not read Cargo.toml package version' }
+          $version = $line.Matches[0].Groups[1].Value
+          $tag = "v$version"
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          if (git tag --list $tag) {
+            "exists=true" >> $env:GITHUB_OUTPUT
+          } else {
+            "exists=false" >> $env:GITHUB_OUTPUT
+          }
+
+      - name: Build verified release executable
+        if: steps.version.outputs.exists == 'false'
+        run: python build.py --arch x86_64
+
+      - name: Create GitHub release
+        if: steps.version.outputs.exists == 'false'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh release create $env:TAG `
+            'dist/x86_64/RustyButterKnife.exe#RustyButterKnife.exe (x86_64 standalone)' `
+            --target '${{ github.sha }}' `
+            --title "Rusty Butter Knife $env:TAG" `
+            --generate-notes
