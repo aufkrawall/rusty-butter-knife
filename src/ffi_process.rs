@@ -43,14 +43,19 @@ fn image_leaf(path: &str) -> &str {
     path.rsplit(['\\', '/']).next().unwrap_or(path)
 }
 
-/// Require both the expected executable basename and an NVIDIA-owned install
-/// location. When uncertain, fail closed and leave the process running.
+/// Require both the expected executable basename and a known NVIDIA-owned
+/// installation root. A user-created directory merely named "NVIDIA
+/// Corporation" elsewhere on disk does not qualify. When uncertain, fail
+/// closed and leave the process running.
 pub fn process_image_is_nvidia_owned(path: &str, expected_exe_name: &str) -> bool {
     if !image_leaf(path).eq_ignore_ascii_case(expected_exe_name) {
         return false;
     }
     let l = path.to_lowercase();
-    l.contains("\\nvidia corporation\\")
+    l.contains(":\\program files\\nvidia corporation\\")
+        || l.contains(":\\program files (x86)\\nvidia corporation\\")
+        || l.contains(":\\programdata\\nvidia corporation\\")
+        || l.contains(":\\programdata\\nvidia\\")
         || l.contains("\\windows\\system32\\driverstore\\filerepository\\nv")
 }
 
@@ -171,13 +176,21 @@ mod tests {
     }
 
     #[test]
-    fn process_image_requires_matching_leaf_and_nvidia_location() {
+    fn process_image_requires_matching_leaf_and_known_nvidia_root() {
         assert!(process_image_is_nvidia_owned(
             r"C:\Program Files\NVIDIA Corporation\FrameViewSDK\PresentMon.exe",
             "presentmon.exe"
         ));
+        assert!(process_image_is_nvidia_owned(
+            r"D:\ProgramData\NVIDIA Corporation\Telemetry\NvTelemetryContainer.exe",
+            "NvTelemetryContainer.exe"
+        ));
         assert!(!process_image_is_nvidia_owned(
             r"C:\Tools\PresentMon.exe",
+            "presentmon.exe"
+        ));
+        assert!(!process_image_is_nvidia_owned(
+            r"C:\Malware\NVIDIA Corporation\PresentMon.exe",
             "presentmon.exe"
         ));
         assert!(!process_image_is_nvidia_owned(
