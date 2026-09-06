@@ -35,10 +35,9 @@ static ENABLED: Mutex<Option<BTreeMap<String, bool>>> = Mutex::new(None);
 static USER_QUIT_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 /// Ctrl+C / console-close request. The console handler only stores the local
-/// atomic. Ordinary execution paths calling `load` relay a local request to
-/// the optional cross-process abort file and also observe requests relayed by
-/// a launcher/elevated parent. This preserves signal-handler safety while
-/// making stop-after-current-item semantics span the UAC process boundary.
+/// atomic. Ordinary execution paths calling `load` also observe the optional
+/// named kernel event relayed by an unelevated launcher, so cancellation spans
+/// the UAC process boundary without filesystem writes from a privileged child.
 pub struct AbortFlag(AtomicBool);
 
 impl AbortFlag {
@@ -51,11 +50,7 @@ impl AbortFlag {
     }
 
     pub fn load(&self, ordering: Ordering) -> bool {
-        if self.0.load(ordering) {
-            relay_abort_file();
-            return true;
-        }
-        abort_file_requested()
+        self.0.load(ordering) || abort_event_requested()
     }
 
     pub fn local_requested(&self, ordering: Ordering) -> bool {
@@ -65,35 +60,27 @@ impl AbortFlag {
 
 pub static ABORT_REQUESTED: AbortFlag = AbortFlag::new();
 
-fn validated_abort_file(raw: &str) -> Option<std::path::PathBuf> {
-    if raw.is_empty() {
+fn validated_abort_event(raw: &str) -> Option<&str> {
+    const PREFIX: &str = "Local\\RustyButterKnife_Abort_";
+    let suffix = raw.strip_prefix(PREFIX)?;
+    if suffix.is_empty()
+        || !suffix
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() || c == '-')
+    {
         return None;
     }
-    let path = std::path::PathBuf::from(raw);
-    let leaf = path.file_name()?.to_string_lossy();
-    if !leaf.starts_with("RustyButterKnife-abort-") || !leaf.ends_with(".flag") {
-        return None;
-    }
-    if path.parent()? != std::env::temp_dir() {
-        return None;
-    }
-    Some(path)
+    Some(raw)
 }
 
-fn abort_file_path() -> Option<std::path::PathBuf> {
-    let g = lock(&OPTS);
-    g.as_ref().and_then(|o| validated_abort_file(&o.abort_file))
-}
-
-fn abort_file_requested() -> bool {
-    abort_file_path().is_some_and(|p| p.is_file())
-}
-
-pub fn relay_abort_file() {
-    let Some(path) = abort_file_path() else {
-        return;
+fn abort_event_requested() -> bool {
+    let event_name = {
+        let g = lock(&OPTS);
+        g.as_ref()
+            .and_then(|o| validated_abort_event(&o.abort_event))
+            .map(str::to_string)
     };
-    let _ = std::fs::write(path, b"abort\n");
+    event_name.is_some_and(|name| crate::ffi_process::named_abort_event_is_signaled(&name))
 }
 
 pub fn user_quit_requested() -> bool {
