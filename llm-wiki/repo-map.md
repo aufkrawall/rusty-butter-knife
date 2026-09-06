@@ -12,9 +12,9 @@ Last cross-checked: 2026-09-06 (v2.0.1 safety hardening)
   `dist/<arch>/RustyButterKnife.exe`.
 - `.cargo/config.toml` — target-specific Rust/link settings.
 - `.github/workflows/windows-ci-release.yml` — Windows-native gate on pushes
-  and pull requests: fmt check, build, clippy `-D warnings`, all targets/tests,
-  safe CLI smoke. A `[release]` main push additionally builds and publishes the
-  current package version as a GitHub release.
+  and pull requests: build, clippy `-D warnings`, all targets/tests, safe CLI
+  smoke. A `[release]` main push additionally builds and publishes the current
+  package version as a GitHub release.
 - `README.md` — user-facing behavior/CLI/safety/logging contract.
 - `AGENTS.md` — development, safety and release rules.
 - `assets/` — README media only.
@@ -109,6 +109,8 @@ Last cross-checked: 2026-09-06 (v2.0.1 safety hardening)
 
 - Normal close-out gate is documented in `AGENTS.md` and mirrored in the
   Windows Actions workflow.
+- Existing source is not guaranteed whole-tree rustfmt-clean; avoid unrelated
+  formatting churn and keep changes scoped to touched code.
 - Safe CLI smokes: `--list-components`, `--version`, `--help`; `--dry-run` only
   when candidate/report behavior needs inspection.
 - Never run execute-mode regression except on a sacrificial VM.
