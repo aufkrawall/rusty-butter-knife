@@ -17,7 +17,7 @@ use windows_sys::Win32::Security::{
 };
 use windows_sys::Win32::Storage::FileSystem::{
     DeleteFileW, MoveFileExW, SetFileAttributesW, FILE_ATTRIBUTE_NORMAL,
-    MOVEFILE_DELAY_UNTIL_REBOOT, SYNCHRONIZE,
+    MOVEFILE_DELAY_UNTIL_REBOOT,
 };
 use windows_sys::Win32::System::Console::{
     GetConsoleMode, GetStdHandle, SetConsoleCtrlHandler, SetConsoleTextAttribute, WriteConsoleW,
@@ -36,8 +36,8 @@ use windows_sys::Win32::System::SystemInformation::{
     GetLocalTime, GetSystemDirectoryW, GetTickCount64,
 };
 use windows_sys::Win32::System::Threading::{
-    CreateMutexW, GetCurrentProcess, GetCurrentProcessId, GetExitCodeProcess, OpenProcess,
-    OpenProcessToken, ReleaseMutex, TerminateProcess, WaitForSingleObject, PROCESS_TERMINATE,
+    CreateMutexW, GetCurrentProcess, GetCurrentProcessId, GetExitCodeProcess, OpenProcessToken,
+    ReleaseMutex, WaitForSingleObject,
 };
 use windows_sys::Win32::UI::Shell::{
     ShellExecuteExW, SEE_MASK_FLAG_DDEWAIT, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS,
@@ -498,46 +498,6 @@ pub fn enum_process_modules(pid: u32) -> Result<Vec<String>, Win32Error> {
         CloseHandle(snap);
     }
     Ok(out)
-}
-
-/// Owned terminate-capable process handle (port of killLockerProcesses).
-pub struct TerminateHandle(HANDLE);
-
-impl TerminateHandle {
-    pub fn open(pid: u32) -> Option<TerminateHandle> {
-        const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
-        let rights = PROCESS_TERMINATE | SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION;
-        // SAFETY: raw OpenProcess; the handle is owned by the returned guard.
-        let h = unsafe { OpenProcess(rights, 0, pid) };
-        if h.is_null() {
-            None
-        } else {
-            Some(TerminateHandle(h))
-        }
-    }
-
-    pub fn terminate(&self, exit_code: u32) -> bool {
-        // SAFETY: handle valid while the guard is alive.
-        unsafe { TerminateProcess(self.0, exit_code) != 0 }
-    }
-
-    /// True when the process exited within `ms` milliseconds.
-    pub fn wait_ms(&self, ms: u32) -> bool {
-        const WAIT_OBJECT_0: u32 = 0;
-        unsafe { WaitForSingleObject(self.0, ms) == WAIT_OBJECT_0 }
-    }
-
-    pub fn last_error() -> Win32Error {
-        last_error()
-    }
-}
-
-impl Drop for TerminateHandle {
-    fn drop(&mut self) {
-        if !self.0.is_null() {
-            unsafe { CloseHandle(self.0) };
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
