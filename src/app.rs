@@ -65,15 +65,28 @@ impl AbortFlag {
 
 pub static ABORT_REQUESTED: AbortFlag = AbortFlag::new();
 
-fn abort_file_path() -> Option<String> {
+fn validated_abort_file(raw: &str) -> Option<std::path::PathBuf> {
+    if raw.is_empty() {
+        return None;
+    }
+    let path = std::path::PathBuf::from(raw);
+    let leaf = path.file_name()?.to_string_lossy();
+    if !leaf.starts_with("RustyButterKnife-abort-") || !leaf.ends_with(".flag") {
+        return None;
+    }
+    if path.parent()? != std::env::temp_dir() {
+        return None;
+    }
+    Some(path)
+}
+
+fn abort_file_path() -> Option<std::path::PathBuf> {
     let g = lock(&OPTS);
-    g.as_ref()
-        .map(|o| o.abort_file.clone())
-        .filter(|p| !p.is_empty())
+    g.as_ref().and_then(|o| validated_abort_file(&o.abort_file))
 }
 
 fn abort_file_requested() -> bool {
-    abort_file_path().is_some_and(|p| std::path::Path::new(&p).is_file())
+    abort_file_path().is_some_and(|p| p.is_file())
 }
 
 pub fn relay_abort_file() {
