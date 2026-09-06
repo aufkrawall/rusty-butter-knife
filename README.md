@@ -21,7 +21,7 @@ acceleration, cause display issues, or otherwise mess up your system.
 
 Scans common NVIDIA installation paths (`Program Files`, `ProgramData`,
 `DriverStore/FileRepository`, `%APPDATA%`, etc.) for known bloat components and
-optionally removes them.  The list includes:
+optionally removes them. The list includes:
 
 - Telemetry DLLs and plugins
 - GeForce Experience / NVIDIA App userland files
@@ -55,7 +55,13 @@ or directly using Cargo:
 cargo build --release
 ```
 
-Builds `RustyButterKnife.exe` using Rust with the MSVC toolchain ([rustup](https://rustup.rs), `x86_64-pc-windows-msvc`). Every produced binary's PE machine type is verified against the requested architecture before it lands in `dist/`, so a cross-build can never silently produce the wrong architecture. In addition, `build.py` automatically injects compiler path remapping so host usernames and local workspace paths are never baked into release binaries.
+Builds `RustyButterKnife.exe` using Rust with the MSVC toolchain
+([rustup](https://rustup.rs), `x86_64-pc-windows-msvc`). `build.py` always
+passes the requested target triple explicitly, including x86_64 builds made on
+ARM64 Windows hosts. Every produced binary's PE machine type is verified
+against the requested architecture before it lands in `dist/`. The build also
+injects compiler path remapping so host usernames and local workspace paths are
+never baked into release binaries.
 
 Options:
 
@@ -63,6 +69,11 @@ Options:
 |--------|-------------|
 | `--arch aarch64` | Cross-compile for Windows-on-ARM64 into `dist/<arch>/`. Requires the matching rustup target (`aarch64-pc-windows-msvc`). |
 | `--clean` | Remove `target/` and `dist/`. |
+
+The repository includes a Windows GitHub Actions gate that runs formatting,
+build, clippy, unit/integration tests, and safe CLI smoke commands on pushes and
+pull requests. Marked release commits on `main` additionally build the verified
+x86_64 artifact and publish the GitHub release.
 
 ---
 
@@ -94,6 +105,7 @@ Starting destructive EXECUTE mode from an explicit `--menu` run also requires
 typing `EXECUTE` as a confirmation (`--menu` itself starts with inert dry-run
 defaults). Component selections and effective switches are always forwarded to
 the elevated TrustedInstaller child.
+
 ### 2. Dry-run (safe, does nothing)
 
 ```
@@ -109,7 +121,7 @@ RustyButterKnife.exe --execute --kill-lockers --disable-services --delete-schedu
 ```
 
 This will attempt a TrustedInstaller-level relaunch via the Task Scheduler COM
-API so that it can delete files a normal Administrator cannot touch.  If the
+API so that it can delete files a normal Administrator cannot touch. If the
 system does not grant TrustedInstaller (Windows limitation), the tool falls back
 to SYSTEM privileges, which are still sufficient for the vast majority of files.
 The parent waits for the SYSTEM worker task and reads its exit code via the Task
@@ -145,8 +157,8 @@ Scheduler (`LastTaskResult`); failures propagate via exit codes 10 and 11.
 | `--list-components` | Print all component keys and their state, then exit. |
 | `--no-ti-relaunch` | Do not attempt TrustedInstaller scheduled-task relaunch. |
 | `--allow-admin-fallback` | Permit destructive execution as Administrator. |
-| `--ti-wait-seconds N` | Parent wait timeout for TI child (default 600, clamped to 15–7200 seconds; `=N` form also accepted). |
-| `--status-file PATH` | Write child run status JSON to PATH (legacy diagnostics handoff; not used by the current TrustedInstaller flow). |
+| `--ti-wait-seconds N` | Parent wait timeout for TI child (default 600, clamped to 15–7200 seconds; the entire value must be an integer; `=N` form also accepted). |
+| `--status-file PATH` | Write final run status JSON to PATH. The request is preserved through UAC/TI handoffs. |
 | `--log-dir PATH` | Base directory for the log file (default: beside the executable). |
 | `--log-file PATH` | Use exactly this log file; all processes of a run append to it, so one run leaves one log. |
 | `--no-pause` | Do not pause on exit. |
@@ -176,8 +188,17 @@ Scheduler (`LastTaskResult`); failures propagate via exit codes 10 and 11.
 
 - Every mutation target - files, processes, services AND scheduled tasks - is
   classified against your component selection first; a deselected component
-  prevents ALL of its associated actions (not just file deletion), and
-  unclassifiable targets fail closed (never mutated).
+  prevents ALL of its associated actions, and unclassifiable targets fail
+  closed (never mutated).
+- Process termination is additionally restricted to an explicit executable
+  allowlist. The process is opened first and its live full image path is
+  verified through the **same handle** used for termination; a matching
+  basename outside an NVIDIA installation path is skipped, and PID reuse
+  between enumeration and termination cannot redirect the action.
+- Service and task mutations require a strong NVIDIA anchor (`NVIDIA`,
+  `GeForce`, or known NVIDIA `Nv...` prefixes) before semantic terms such as
+  `update`, `share`, or `broadcast` are considered. Generic `Nv...` names from
+  unrelated software therefore fail closed.
 - Recursive operations never traverse reparse points (symlinks/junctions);
   such entries may be removed themselves but their targets are untouched.
 - External-tool output capture is hard-bounded: timeouts terminate the child
@@ -193,18 +214,18 @@ Scheduler (`LastTaskResult`); failures propagate via exit codes 10 and 11.
 - System tools (`schtasks.exe`, `takeown.exe`, `icacls.exe`) are always invoked
   by absolute path from `%SystemRoot%\System32` — never through the PATH search,
   which would allow CWD/app-dir planting in an elevated context.
-- Ctrl+C / closing the console triggers a graceful abort: processing stops after
-  the current item and report/status artifacts are still written (exit code 3).
+- Ctrl+C / closing the console triggers cancellation. For a UAC handoff, the
+  launcher relays the request to the elevated process and remains attached
+  until that process actually exits; it never reports "aborted" while an
+  elevated destructive child is still running.
 - Scheduled-task names are decoded from the OEM code page, so non-ASCII task
   names survive matching and `/TN` operations on localized systems.
 - DriverStore package roots are recognized for both `.inf_amd64_` (x64) and
   `.inf_arm64_` (ARM64) packages; whole-package deletion stays blocked and only
   explicitly allow-listed subfolders may be removed recursively. Note that
   individual files *inside* DriverStore packages can still be deleted when a
-  file name matches an enabled component (for example `nvvhci.sys` inside the
-  USB-C driver package when USBTypeC cleanup is on); this is intended for
-  component payload removal but means an opt-in component can touch files
-  inside a driver package.
+  file name matches an enabled component; this is intended component payload
+  removal but means an opt-in component can touch files inside a driver package.
 - Read-only files/directories get their attributes cleared and are retried once;
   deep paths fall back to extended-length (`\\?\`) forms before being scheduled
   for reboot-time deletion.
@@ -230,9 +251,9 @@ to **one single log file** next to the executable:
   append to this same file (`--log-file PATH` overrides the location;
   `--log-dir PATH` changes the base directory).
 
-No status JSON, CSV or separate report files are created anymore. Stale
-`NvDebloatTI-*-status.json` files from versions older than 1.3.0 are swept
-automatically at relaunch time.
+No status JSON, CSV or separate report files are created by default. Supplying
+`--status-file PATH` explicitly adds the final machine-readable status JSON;
+the normal unified run log remains unchanged.
 
 ---
 
