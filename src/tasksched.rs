@@ -270,6 +270,9 @@ pub fn attempt_trusted_installer_relaunch() -> TiRelaunchResult {
         // of riding out up to ti_wait_seconds. finish_task() below stops and
         // deletes the task, so an aborted wait leaves no running worker.
         if app::ABORT_REQUESTED.load(std::sync::atomic::Ordering::SeqCst) {
+            // Show the child's last lines before announcing the abort, so the
+            // console does not jump from a stale heartbeat to the exit path.
+            let _ = stream_child_log_lines(&log_path, &mut log_cursor, true);
             log_line(
                 "WARN",
                 "Abort requested while waiting for the TI child; stopping the scheduled task.",

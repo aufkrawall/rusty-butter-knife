@@ -25,7 +25,6 @@ windows-sys = { version = "0.60", features = [
     "Win32_Security",
     "Win32_Security_Authorization",
     "Win32_UI_Shell",
-    "Win32_UI_WindowsAndMessaging",
     "Win32_Globalization",
     "Win32_System_IO",
     "Win32_System_Registry",

@@ -1,12 +1,12 @@
 # Current State
 
-Last cross-checked: 2026-09-06 (v2.1.0 release prep; v2.0.1 hardening + Windows CI/release workflow)
+Last cross-checked: 2026-09-06 (full-repo audit pass; CI least privilege, wiki drift repair — see log/recent.md)
 
 ## Summary
 
-- Native Windows NVIDIA driver post-install debloater. Pure Rust crate at repo
-  root (`src/`, 62 unit/integration tests after the v2.0.1 additions, unsafe
-  confined to the `ffi*` module family). C++ legacy version is gone.
+- Native Windows NVIDIA driver post-install debloater. Pure Rust crate at
+  repo root (`src/`, 64 unit/integration tests, unsafe confined to the
+  `ffi*` module family). C++ legacy version is gone.
   `python build.py` or `cargo build --release` builds `RustyButterKnife.exe`
   with explicit target triples, PE-machine verification and compiler path
   remapping (`--remap-path-prefix`).

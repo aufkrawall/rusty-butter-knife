@@ -1,7 +1,7 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-09-05 (polyglot hardened audit and quality improvements; see
-log/recent.md)
+Last cross-checked: 2026-09-06 (full-repo audit pass; codestyle/debug-tools
+rewritten for the Rust-only tree, log rotated — see log/recent.md)
 
 Primary sources:
 - `AGENTS.md`
@@ -41,8 +41,8 @@ the concrete implementation.
 
 ## Content Catalog
 - `codestyle.md`
-  - C++17 wide-char conventions, naming, formatting, logging discipline;
-    Python style in `build.py`. Last verified 2026-08-23.
+  - Rust naming/formatting/logging discipline and unsafe policy; Python
+    style in `build.py`. Last verified 2026-09-06.
 - `current.md`
   - Compact current-state summary and token-efficient routing into the
     longer wiki pages.
@@ -55,6 +55,7 @@ the concrete implementation.
     trade-off. Includes the arch-output-collision and no-test-suite items.
 - `debug-tools.md`
   - Safe verification commands, run-log anatomy, and diagnostic workflows.
+    Last verified 2026-09-06.
 - `rust-port-feasibility.md`
   - Full API-surface inventory vs Rust coverage, verdict, and the managed
     risks of a potential port. Last verified 2026-08-23.

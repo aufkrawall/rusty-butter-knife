@@ -387,7 +387,8 @@ pub fn current_token_account() -> String {
         return "<unknown>".to_string();
     }
     // TOKEN_USER layout: first member is the SID pointer into the buffer.
-    let sid: PSID = unsafe { *(buf.as_ptr() as *const PSID) };
+    // The buffer is a raw byte allocation, so read the pointer unaligned.
+    let sid: PSID = unsafe { std::ptr::read_unaligned(buf.as_ptr() as *const PSID) };
 
     let mut name = [0u16; 256];
     let mut domain = [0u16; 256];

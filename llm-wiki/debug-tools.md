@@ -1,12 +1,12 @@
 # Debug Tools
 
-Last cross-checked: 2026-08-23
+Last cross-checked: 2026-09-06 (Rust-only tree)
 
 Primary sources:
 - `AGENTS.md`
 - `README.md` (Logs & reports section)
-- `GreenPostInstallDebloatNative.cpp` (logging core, `writeStatusJson`,
-  exit-code enum)
+- `src/logging.rs` (log core), `src/main.rs` (`write_status_json`),
+  `src/app.rs` (exit-code constants)
 
 ## Tools
 
@@ -36,7 +36,7 @@ Primary sources:
    failure. The single run log contains both parent and child output.
 2. Look for orphaned `NvDebloatTI-*` scheduled tasks / `-status.json`
    files; these are swept automatically at relaunch time
-   (`sweepStaleTiArtifacts`) but can be inspected manually via
+   (`sweep_stale_ti_artifacts`) but can be inspected manually via
    `schtasks /Query | Select-String NvDebloat`.
 3. A second execute-mode instance refuses to start with exit code 12
    (single-instance mutex).
@@ -46,13 +46,13 @@ Primary sources:
 Sections in order: progress/log lines → `==== Candidates ==== ` table →
 per-action records → post-run existence check (paths remaining, with reason:
 dry-run / pending reboot deletion / failure) → final JSON report block.
-`tallyPreviousLogs()` additionally embeds a history summary from prior logs
+`tally_previous_logs()` additionally embeds a history summary from prior logs
 in the same directory.
 
 ## Tool path resolution
 
 - The tool resolves its own dependencies: system executables strictly from
-  `%SystemRoot%\System32`; `clang++` preference order in `build.py` is
-  bundled `mingw64/bin/clang++.exe` > system `clang++` on PATH > abort.
+  `%SystemRoot%\System32`. `build.py` resolves `cargo` from PATH or
+  `~/.cargo/bin` and always passes the explicit MSVC target triple.
 - No other external tool paths are involved; do not introduce PATH-based
   resolution of system executables in elevated contexts.

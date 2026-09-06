@@ -122,39 +122,48 @@ pub fn get_existing_roots() -> Vec<PathBuf> {
     keys.into_iter().map(PathBuf::from).collect()
 }
 
-/// Port of `isParentOfOrEqual`. Canonicalize-with-fallback mirrors
+/// Canonical lowercase comparison key. Canonicalize-with-fallback mirrors
 /// weakly_canonical: existing prefixes resolve to their real casing/path.
-fn is_parent_of_or_equal(parent: &Path, child: &Path) -> bool {
-    let canon = |p: &Path| -> String {
-        match p.canonicalize() {
-            Ok(c) => c.to_string_lossy().into_owned(),
-            Err(_) => p.to_string_lossy().into_owned(),
-        }
-    };
-    let mut p = to_lower(&canon(parent));
-    let c = to_lower(&canon(child));
-    if p == c {
-        return true;
-    }
-    if !p.is_empty() && !p.ends_with('\\') {
-        p.push('\\');
-    }
-    c.starts_with(&p)
+fn canonical_lower_key(p: &Path) -> String {
+    let canon = p
+        .canonicalize()
+        .map(|c| c.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| p.to_string_lossy().into_owned());
+    to_lower(&canon)
 }
 
-/// Port of `collapseNestedCandidates`.
+/// Port of `isParentOfOrEqual` over precomputed canonical keys.
+fn key_is_parent_of_or_equal(parent_key: &str, child_key: &str) -> bool {
+    if parent_key == child_key {
+        return true;
+    }
+    if !parent_key.is_empty() && !parent_key.ends_with('\\') {
+        return child_key.starts_with(&format!("{parent_key}\\"));
+    }
+    child_key.starts_with(parent_key)
+}
+
+/// Port of `collapseNestedCandidates`. Canonical keys are computed once per
+/// candidate: the pairwise nested check is O(n^2) in candidate count, and
+/// canonicalizing inside the loop made that O(n^2) stat calls.
 fn collapse_nested_candidates(candidates: &mut Vec<Candidate>) {
     candidates.sort_by(|a, b| {
         let as_ = a.path.to_string_lossy();
         let bs = b.path.to_string_lossy();
         as_.len().cmp(&bs.len()).then_with(|| as_.cmp(&bs))
     });
+    let keys: Vec<String> = candidates
+        .iter()
+        .map(|c| canonical_lower_key(&c.path))
+        .collect();
     let mut out: Vec<Candidate> = Vec::new();
-    for c in candidates.drain(..) {
-        let nested = out.iter().any(|existing| {
-            existing.is_directory && is_parent_of_or_equal(&existing.path, &c.path)
-        });
+    let mut kept_directory_keys: Vec<String> = Vec::new();
+    for (i, c) in candidates.drain(..).enumerate() {
+        let nested = kept_directory_keys
+            .iter()
+            .any(|k| key_is_parent_of_or_equal(k, &keys[i]));
         if !nested {
+            kept_directory_keys.push(keys[i].clone());
             out.push(c);
         }
     }
@@ -385,4 +394,54 @@ pub fn write_candidates_to_log() {
         ss.push('\n');
     }
     append_block_serialized(&log_path, &ss);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cand(path: &str, is_directory: bool) -> Candidate {
+        Candidate {
+            path: PathBuf::from(path),
+            component_key: "Telemetry".to_string(),
+            component_name: "Telemetry".to_string(),
+            is_directory,
+        }
+    }
+
+    #[test]
+    fn nested_candidates_collapse_under_directory_parent() {
+        let dir = r"C:\Program Files\NVIDIA Corporation\Installer2";
+        let mut candidates = vec![
+            cand(&format!("{dir}\\sub\\nvtelemetry.dll"), false),
+            cand(dir, true),
+            cand(&format!("{dir}\\nested\\deeper\\x.dll"), false),
+            cand(r"C:\ProgramData\NVIDIA\NVTelemetry.dll", false),
+            // Equal keys (case-insensitive) collapse into the kept entry.
+            cand("c:\\PROGRAM FILES\\NVIDIA Corporation\\Installer2", true),
+        ];
+        collapse_nested_candidates(&mut candidates);
+        let paths: Vec<String> = candidates
+            .iter()
+            .map(|c| c.path.to_string_lossy().into_owned())
+            .collect();
+        // Everything under the Installer2 directory (including its
+        // case-variant duplicate) collapses into that one directory entry;
+        // the unrelated ProgramData file survives.
+        assert_eq!(paths.len(), 2, "collapsed to: {paths:?}");
+        assert!(paths.iter().any(|p| p.ends_with("Installer2")));
+        assert!(paths.iter().any(|p| p.contains("ProgramData")));
+    }
+
+    #[test]
+    fn distinct_paths_are_never_collapsed() {
+        // Prefix similarity without a separator must NOT count as nesting:
+        // "...\NVIDIA Corporation\Installer2b" is a different directory.
+        let mut candidates = vec![
+            cand(r"C:\NVIDIA Corporation\Installer2", true),
+            cand(r"C:\NVIDIA Corporation\Installer2b\nvthing.dll", false),
+        ];
+        collapse_nested_candidates(&mut candidates);
+        assert_eq!(candidates.len(), 2, "no false prefix collapse");
+    }
 }

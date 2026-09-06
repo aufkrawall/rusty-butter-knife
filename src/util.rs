@@ -258,7 +258,6 @@ pub fn atoi_prefix(s: &str) -> i64 {
     v.clamp(i32::MIN as i64 as i128, i32::MAX as i64 as i128) as i64
 }
 
-/// CSV line parser honoring `""` quoting (port of `parseCsvLine`).
 /// Unique-ish suffix for run IDs, temp names, and log-file disambiguation.
 /// Combines PID with a process-lifetime atomic counter XORed by tick
 /// milliseconds so same-second runs never collide (audit finding: run IDs
@@ -271,6 +270,7 @@ pub fn now_unique_suffix() -> String {
     format!("{:x}-{:x}", crate::ffi::current_process_id(), mixed)
 }
 
+/// CSV line parser honoring `""` quoting (port of `parseCsvLine`).
 pub fn parse_csv_line(line: &str) -> Vec<String> {
     let chars: Vec<char> = line.chars().collect();
     let mut fields: Vec<String> = Vec::new();

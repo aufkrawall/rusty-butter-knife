@@ -268,19 +268,15 @@ fn unsafe_recursive_directory_decision(
 
 /// Port of `unsafeRecursiveDirectoryTarget`: whole DriverStore package roots
 /// and non-allow-listed driver payload folders must never be removed
-/// recursively. Kind probing is no-follow; an UNREADABLE stat or a reparse
-/// point fails closed (treated as an unsafe recursive target).
+/// recursively. Kind probing is no-follow and single-shot; an UNREADABLE stat
+/// or a reparse point fails closed (treated as an unsafe recursive target).
 fn unsafe_recursive_directory_target(p: &Path) -> bool {
-    let is_dir = matches!(
+    let treat_as_directory = !matches!(
         crate::fsutil::path_kind_no_follow(p),
-        Ok(crate::fsutil::PathKind::Directory)
-    );
-    let stat_failed_or_reparse = matches!(
-        crate::fsutil::path_kind_no_follow(p),
-        Err(_) | Ok(crate::fsutil::PathKind::Reparse)
+        Ok(crate::fsutil::PathKind::Missing | crate::fsutil::PathKind::File)
     );
     unsafe_recursive_directory_decision(
-        is_dir || stat_failed_or_reparse,
+        treat_as_directory,
         &crate::matching::path_wide_lower(p),
         &crate::util::to_lower(
             &p.parent()
