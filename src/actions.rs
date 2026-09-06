@@ -3,10 +3,9 @@
 //! via schtasks.exe. Ports of `inspectNvContainerModules`,
 //! `killLockerProcesses`, `handleServices`, `handleScheduledTasks`.
 
-mod target_safety;
-
 use crate::app;
 use crate::ffi;
+use crate::ffi_process;
 use crate::logging::{add_action, log_action, log_line};
 use crate::matching::{
     is_preserved_container_name, module_is_telemetry_or_updater, process_action_decision,
@@ -141,14 +140,14 @@ pub fn kill_locker_processes(enabled: &crate::app::EnabledMap) {
     };
 
     struct Target {
-        handle: target_safety::VerifiedTerminateHandle,
+        handle: ffi_process::VerifiedTerminateHandle,
         exe_name: String,
         component_key: String,
     }
     let mut targets: Vec<Target> = Vec::new();
 
     for proc in processes {
-        if !target_safety::process_name_is_explicitly_killable(&proc.exe_name) {
+        if !ffi_process::process_name_is_explicitly_killable(&proc.exe_name) {
             continue;
         }
         let component = match process_action_decision(&proc.exe_name, enabled, preserve_containers)
@@ -168,7 +167,7 @@ pub fn kill_locker_processes(enabled: &crate::app::EnabledMap) {
         };
 
         if !execute {
-            match target_safety::verify_process_for_dry_run(proc.pid, &proc.exe_name) {
+            match ffi_process::verify_process_for_dry_run(proc.pid, &proc.exe_name) {
                 Ok(image) => log_action(
                     "KillProcess",
                     "DRYRUN",
@@ -187,7 +186,7 @@ pub fn kill_locker_processes(enabled: &crate::app::EnabledMap) {
             continue;
         }
 
-        let (handle, image) = match target_safety::VerifiedTerminateHandle::open(
+        let (handle, image) = match ffi_process::VerifiedTerminateHandle::open(
             proc.pid,
             &proc.exe_name,
         ) {
@@ -296,7 +295,7 @@ pub fn handle_services(enabled: &crate::app::EnabledMap) {
 
     for svc in services {
         let full = format!("{} ({})", svc.name, svc.display);
-        if !target_safety::has_strong_nvidia_named_target_context(&full) {
+        if !ffi_process::has_strong_nvidia_named_target_context(&full) {
             continue;
         }
         let preserve = app::opts(|o| o.preserve_nv_containers);
@@ -495,7 +494,7 @@ pub fn handle_scheduled_tasks(enabled: &crate::app::EnabledMap) {
     let schtasks = system_dir_file("schtasks.exe").ok();
 
     for task_name in task_names {
-        if !target_safety::has_strong_nvidia_named_target_context(&task_name) {
+        if !ffi_process::has_strong_nvidia_named_target_context(&task_name) {
             continue;
         }
         let component = match task_action_decision(&task_name, enabled) {
