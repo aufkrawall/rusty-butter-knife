@@ -14,10 +14,12 @@
   strict CLI parsing, TI wait hardening — see `known-debt.md` resolved
   findings), the guarded Windows CI/release workflow, COM task enumeration,
   and the named-event UAC cancellation relay.
-- First CI-mediated release still pending: no `[release]` commit has ever
-  run the release job. Plan: push bump commit, wait for gate green, then an
-  empty `[release]` head commit so the gated tree and the release tree are
-  identical.
+- First CI-mediated release completed: gate ran on the bumped tree
+  (`6f68aa7`), then an empty `[release]` head commit (`2483caf`) with an
+  identical tree triggered the release job. Tag `v2.1.0` published on
+  2026-09-06 with the PE-verified x86_64 executable; downloaded asset
+  reports "Rusty Butter Knife version 2.1.0". Stale merged branch
+  `fix/v2.0.1-safety-hardening` deleted.
 
 ## 2026-09-05 — Removed legacy PowerShell wrapper & completed audit handoff report
 
