@@ -34,9 +34,12 @@ Last cross-checked: 2026-09-06 (v2.0.1 safety hardening + Windows CI/release wor
   - Execute mode rejects malformed/unknown CLI input before mutation; numeric
     TI wait values require full-string integer parsing.
 - `.github/workflows/windows-ci-release.yml` provides a Windows-native gate on
-  pushes/PRs: fmt check, build, clippy `-D warnings`, all tests and safe CLI
-  smokes. A marked merge commit on `main` (`[release]`) builds the verified
-  x86_64 executable and publishes the versioned GitHub release.
+  pushes/PRs: build, clippy `-D warnings`, all tests and safe CLI smokes. A
+  marked merge commit on `main` (`[release]`) builds the verified x86_64
+  executable and publishes the versioned GitHub release.
+- Existing source is not guaranteed whole-tree rustfmt-clean; verification
+  intentionally avoids unrelated formatter churn and follows the scoped style
+  policy in `AGENTS.md`.
 
 ## Routing
 
