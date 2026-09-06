@@ -12,6 +12,7 @@ mod deletion;
 mod discovery;
 mod ffi;
 mod ffi_capture;
+mod ffi_process;
 mod ffi_services;
 mod ffi_tasksched;
 mod fsutil;
@@ -356,8 +357,6 @@ fn relaunch_elevated_for_wizard() -> Option<i32> {
         if app::ABORT_REQUESTED.local_requested(std::sync::atomic::Ordering::SeqCst) {
             app::relay_abort_file();
         }
-        // Do not abandon the child. Cancellation is cooperative across the
-        // UAC boundary and the launcher remains attached until it exits.
         false
     });
     let _ = std::fs::remove_file(&abort_file);
