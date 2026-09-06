@@ -36,6 +36,8 @@ pub struct Options {
     pub status_file: String,
     pub log_dir_override: String,
     pub log_file_override: String,
+    /// Internal cross-process Ctrl+C relay. Not a public CLI contract.
+    pub abort_file: String,
     pub show_help: bool,
     pub show_version: bool,
     pub list_components: bool,
@@ -73,6 +75,7 @@ impl Default for Options {
             status_file: String::new(),
             log_dir_override: String::new(),
             log_file_override: String::new(),
+            abort_file: String::new(),
             show_help: false,
             show_version: false,
             list_components: false,
