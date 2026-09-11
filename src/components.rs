@@ -112,10 +112,16 @@ pub fn build_components() -> &'static [Component] {
                 &[],
             ),
             c(
+                // Opt-in: the display driver hard-depends on this payload.
+                // `nvldumdx.dll` loads `<driverstore package>\NvCamera\NvCamera64.dll`
+                // for every application whose NVIDIA profile has "Freestyle Filters
+                // App Allow" (DRS 0x1085DA8A) set, and returns E_FAIL when the load
+                // fails, which caps the adapter at D3D feature level 10_1 for that
+                // application. Deleting it breaks ~35 shipped game profiles.
                 "AnselCamera",
                 "Ansel / NvCamera",
-                true,
                 false,
+                true,
                 &["NvCamera*.dll", "*Ansel*"],
                 &["NvCamera", "Ansel"],
             ),

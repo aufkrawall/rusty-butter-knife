@@ -49,13 +49,26 @@ but would alter an existing CLI contract for little practical benefit.
 
 ## DriverStore package-interior payload deletion
 
-Opt-in components (NGX/HDAudio/CaptureSDK/NvWMI) intentionally match payload
-files inside DriverStore packages. Deleting those files corrupts the package
-copy while leaving active installed copies untouched. README discloses this.
-Whole package roots remain protected and recursive DriverStore deletion is
-allow-listed. Default-on AnselCamera versus historical `NvCamera*.dll` inside
-old nv_dispi packages remains a version-dependent latent risk of the same
-class.
+Opt-in components (NGX/HDAudio/CaptureSDK/NvWMI/AnselCamera) intentionally match
+payload files inside DriverStore packages. Deleting those files corrupts the
+package copy while leaving active installed copies untouched. README discloses
+this. Whole package roots remain protected and recursive DriverStore deletion is
+allow-listed.
+
+AnselCamera was default-on until it was shown to break the display driver, and is
+now opt-in behind `--include-ansel`. Measured on r616_69 / 616.92: `nvldumdx.dll`
+reads the DRS settings `0x1035DB89` ("Freestyle Filters Allow", global) and
+`0x1085DA8A` ("Freestyle Filters App Allow", per application) straight out of
+`nvdrsdb.bin`. When both are set it loads
+`<driverstore package>\NvCamera\NvCamera64.dll`; if that load fails it returns
+`E_FAIL`, and the adapter is then limited to D3D feature level 10_1 for that
+process. `D3D11CreateDevice` with `D3D_FEATURE_LEVEL_11_0` (and any D3D12 device)
+returns `DXGI_ERROR_UNSUPPORTED` as a result. Roughly 35 shipped game profiles
+carry `0x1085DA8A = 1` (The Witcher 3, Conan Exiles, Mass Effect Andromeda,
+Mirror's Edge Catalyst, Watch Dogs 2, Hellblade, The Witness, ...), so deleting
+the component silently breaks those titles. Note that the NVIDIA profile flag
+stays set even after the payload is gone, so the breakage survives driver
+reinstalls until the payload is restored.
 
 ## External ownership utilities
 

@@ -103,6 +103,9 @@ pub fn effective_child_switches() -> Vec<String> {
     if opts.include_capture_sdk {
         out.push("--include-capture-sdk".into());
     }
+    if opts.include_ansel {
+        out.push("--include-ansel".into());
+    }
     if opts.allow_admin_fallback {
         out.push("--allow-admin-fallback".into());
     }

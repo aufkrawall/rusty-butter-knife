@@ -46,7 +46,10 @@ Optional component inclusions:\n\
   --include-ngx --include-hdaudio --include-physx --include-notebook-optimus\n\
   --include-virtual-audio        Include NvVAD/NVIDIA Virtual Audio Device cleanup. Off by default.\n\
   --include-nvwmi                Include NVIDIA WMI management interface cleanup. Off by default.\n\
-  --include-capture-sdk          Include NvFBC/NvIFR capture SDK runtime cleanup. Off by default.\n\n\
+  --include-capture-sdk          Include NvFBC/NvIFR capture SDK runtime cleanup. Off by default.\n\
+  --include-ansel                Include Ansel/NvCamera cleanup. Off by default: the display driver\n\
+                                 loads NvCamera64.dll for Freestyle-enabled game profiles and fails\n\
+                                 D3D device creation without it.\n\n\
 Component selection:\n\
   --component=Key:on/off         Toggle a specific component (repeatable).\n\
   --list-components              Print all component keys and their state, then exit.\n\n\
@@ -183,6 +186,8 @@ pub fn parse_args(args: &[String]) -> Options {
             opt.include_nvwmi = true;
         } else if low == "--include-capture-sdk" {
             opt.include_capture_sdk = true;
+        } else if low == "--include-ansel" {
+            opt.include_ansel = true;
         } else if low == "--no-pause" {
             opt.no_pause = true;
         } else if low == "--pause" {
@@ -349,6 +354,7 @@ pub fn initialize_component_selection() {
             o.include_virtual_audio,
             o.include_nvwmi,
             o.include_capture_sdk,
+            o.include_ansel,
         )
     });
     app::enabled_mut(|m| {
@@ -374,6 +380,9 @@ pub fn initialize_component_selection() {
             }
             if c.key == "CaptureSDK" {
                 enabled = include.6;
+            }
+            if c.key == "AnselCamera" {
+                enabled = include.7;
             }
             m.insert(c.key.clone(), enabled);
         }

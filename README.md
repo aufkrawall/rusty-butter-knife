@@ -155,6 +155,7 @@ Scheduler (`LastTaskResult`); failures propagate via exit codes 10 and 11.
 | `--include-virtual-audio` | Include NvVAD virtual audio device cleanup. |
 | `--include-nvwmi` | Include NVIDIA WMI management interface cleanup. |
 | `--include-capture-sdk` | Include NvFBC/NvIFR capture SDK runtime cleanup. |
+| `--include-ansel` | Include Ansel/NvCamera cleanup. Off by default; the display driver loads `NvCamera64.dll` for Freestyle-enabled game profiles and fails D3D device creation without it. |
 | `--component=Key:on/off` | Toggle a specific component (repeatable, e.g. `--component=NGX:on`). Unknown keys or malformed values are listed with the valid keys; execute mode rejects them before any change (exit code 13), dry runs only warn. |
 | `--list-components` | Print all component keys and their state, then exit. |
 | `--no-ti-relaunch` | Do not attempt TrustedInstaller scheduled-task relaunch. |
