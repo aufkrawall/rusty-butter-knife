@@ -1,3 +1,60 @@
+## 2026-09-11 — v2.2.0: AnselCamera made opt-in (driver-breaking deletion)
+
+Root-caused a display-driver failure produced by this tool and turned the
+responsible component off by default.
+
+Symptom on the affected machine: an identical D3D11 test binary failed with
+`DXGI_ERROR_UNSUPPORTED` (0x887A0004) when named `witcher3.exe` and succeeded
+under any other name. The real symptom is not "the app cannot start" but a
+per-application feature-level cap: the NVIDIA adapter reported a maximum of
+D3D feature level 10_1 for that process, so every `D3D11CreateDevice` asking
+for FL >= 11_0 (and every D3D12 device) failed, while a call passing
+`pFeatureLevels = NULL` silently got a 10_1 device.
+
+Mechanism (measured on driver r616_69 / 616.92):
+
+- `nvldumdx.dll` (the NVIDIA user-mode D3D loader) references exactly 11 DRS
+  setting IDs; two of them gate this path: `0x1035DB89` ("Freestyle Filters
+  Allow", global) and `0x1085DA8A` ("Freestyle Filters App Allow", per
+  application). It parses `nvdrsdb.bin` itself, so NVAPI/Profile-Inspector
+  changes to the *application* profile do not affect the decision; only the
+  global flag or the base database does.
+- When both are set, two callers of that decision function load
+  `<driverstore package>\NvCamera\NvCamera64.dll` (built from
+  `GetModuleFileNameW(nvldumdx)` + subdir + filename) and return `E_FAIL`
+  (0x80004005) if the load fails. `nvwgf2umx.dll` is then never loaded and
+  the adapter stays at FL 10_1.
+- Proof: flipping the single value byte of `0x1085DA8A` for the `The Witcher 3`
+  profile in `nvdrsdb.bin` (offset 0x13A078 on that driver) from 1 to 0 lifted
+  the cap to FL 12_1 with no restart; restoring the byte reinstated it.
+- Scope: ~35 shipped NVIDIA game profiles carry `0x1085DA8A = 1`. 31 of 55
+  probed profile executable names were affected (The Witcher 3, Conan Exiles,
+  Mass Effect Andromeda, Mirror's Edge Catalyst, Watch Dogs 2, Hellblade,
+  The Witness, Bulletstorm, Dark and Light, ...).
+
+The tool's `AnselCamera` component (default-on until now) deletes exactly that
+payload: run logs show `DeletePath [AnselCamera] ...\NvCamera :: Removed
+entries=30` about 80 s after each driver install. The NVIDIA profile flag stays
+set after the payload is gone, so the breakage survives driver reinstalls and
+looks like a driver bug.
+
+Change: `AnselCamera` is now `default_enabled = false, optional = true` and is
+enabled with the new `--include-ansel` flag, wired exactly like
+`--include-capture-sdk` (parse, defaults, component selection, elevated-child
+argument forwarding). README flag table and `known-debt.md` updated; the
+DriverStore payload-deletion debt note now records the measured dependency
+instead of calling it a latent risk.
+
+Gate before the bump: `cargo build`, `cargo clippy --all-targets -D warnings`
+(clean), `cargo test --all-targets` (64 passed), smokes `--list-components`
+(`[ ] AnselCamera (optional)`), `--include-ansel --list-components` (`[x]`),
+`--help`.
+
+Not verified here: that restoring `NvCamera64.dll` alone lifts the cap. Only
+the negative direction is measured (flag set + payload absent -> E_FAIL ->
+FL 10_1). The payload has never been present on the test machine long enough
+to check the positive direction.
+
 ## 2026-09-06 — Full-repo audit (v2.1.0 tree); CI least privilege, O(n²) collapse fix, wiki drift repair
 
 Template-driven audit of the entire repo (all 25 Rust modules line-by-line,

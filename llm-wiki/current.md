@@ -1,6 +1,6 @@
 # Current State
 
-Last cross-checked: 2026-09-06 (full-repo audit pass; CI least privilege, wiki drift repair — see log/recent.md)
+Last cross-checked: 2026-09-11 (v2.2.0 release prep; AnselCamera made opt-in — see log/recent.md)
 
 ## Summary
 

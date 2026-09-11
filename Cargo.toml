@@ -1,6 +1,6 @@
 [package]
 name = "rusty-butter-knife"
-version = "2.1.0"
+version = "2.2.0"
 edition = "2021"
 description = "Native Windows NVIDIA driver post-install debloater"
 license = "MIT"
