@@ -1,6 +1,6 @@
 # Current State
 
-Last cross-checked: 2026-10-22 (log-driven deletion/reporting fixes — see log/recent.md)
+Last cross-checked: 2026-10-22 (v2.3.0 release — see log/recent.md)
 
 ## Summary
 

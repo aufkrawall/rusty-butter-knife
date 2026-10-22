@@ -1,3 +1,11 @@
+## 2026-10-22 — Release v2.3.0
+
+Bumped package version to 2.3.0 (`Cargo.toml`, `Cargo.lock`, `src/app.rs`)
+and promoted `## Unreleased` to `## v2.3.0 - 2026-10-22` in `CHANGELOG.md`.
+Includes best-effort tree deletion (`remove_tree_best_effort`), Restart Manager
+lock-holder diagnostics, earlier-run pending-reboot detection, human-friendly
+console narrative formatting and stage summaries, and related reporting fixes.
+
 ## 2026-10-22 — llm-prompt-templates default integration
 
 Integrated the default bundle of `aufkrawall/llm-prompt-templates` (commit

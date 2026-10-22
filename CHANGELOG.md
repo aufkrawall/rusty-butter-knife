@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v2.3.0 - 2026-10-22
+
 ### New
 
 - **Lock holder diagnostics:** when a file cannot be deleted, the log names the process that holds it (read-only Restart Manager lookup; nothing is stopped because of it).
