@@ -1,3 +1,22 @@
+## 2026-10-22 — Human-friendly console and log reporting
+
+After a clean test run (0 WARN lines), the remaining feedback was about
+readability. The console is now a short narrative: `== heading ==` sections
+(header, services/processes/tasks, search, removal, Result), `HH:MM:SS`
+prefixes, `WARNING:`/`ERROR:` markers and sentence-style action lines
+(`Deleted [Telemetry]: path`, `Would delete ...`, `In use - will be deleted at
+the next restart ...`). A closing Result section states what happened and
+whether a restart is needed. New file-only `DETAIL` level keeps the run
+header, search roots, PIDs, full module paths and per-entry reboot queueing
+in the log without cluttering the console; the TI parent streams worker lines
+through the same renderer and skips untimestamped blocks. Messages are forced
+single-line. The `Log file:` line prints once per run (children log it as
+DETAIL); post-delete container re-inspection runs only after attempted
+deletions. The services summary now names the preserved container.
+Contract kept: `run header ====` and `Candidate count: N` markers, JSON
+report/status fields, exit codes. Verified with 88 tests and a non-admin
+dry run; execute mode not exercised (VM-only).
+
 ## 2026-10-22 — Agent tasks end with a fresh dist binary
 
 User request: after an agent finishes, `dist/` must always hold a new binary.

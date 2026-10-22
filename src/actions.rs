@@ -6,7 +6,7 @@
 use crate::app;
 use crate::ffi;
 use crate::ffi_process;
-use crate::logging::{add_action, log_action, log_line};
+use crate::logging::{add_action, log_action, log_line, DETAIL};
 use crate::matching::{
     is_preserved_container_name, match_component_for_path, module_is_telemetry_or_updater,
     process_action_decision, service_action_decision, task_action_decision, ActionDecision,
@@ -16,29 +16,41 @@ use crate::sysinfo::system_dir_file;
 use crate::util::{join_command, parse_csv_line, to_lower, trim};
 use crate::winfmt::format_win_error;
 
-/// Pure wording core for one loaded telemetry/update module. `targeted`:
-/// the current component selection deletes this path; `scheduled`: its
-/// reboot-time deletion verifiably succeeded in this run. None = stay quiet
-/// (a kept module was already reported on first sighting).
+/// Pure wording core for one loaded telemetry/update module (`leaf` = file
+/// name). `targeted`: the current component selection deletes this path;
+/// `scheduled`: its reboot-time deletion verifiably succeeded in this run.
+/// None = stay quiet (a kept module was already reported on first sighting).
 pub fn loaded_module_message(
     post_delete_phase: bool,
     first_sighting: bool,
     targeted: bool,
     scheduled: bool,
-) -> Option<&'static str> {
+    leaf: &str,
+    pid: u32,
+) -> Option<(&'static str, String)> {
     if post_delete_phase && scheduled {
-        return Some("Module still loaded; scheduled for deletion at the next reboot");
+        return Some((
+            DETAIL,
+            format!("{leaf} is still loaded (PID {pid}); it is queued for deletion at the next restart."),
+        ));
     }
     match (first_sighting, targeted) {
-        (true, true) => Some(
-            "Container has a module loaded that the selection removes; it cannot be deleted until the container restarts (reboot)",
-        ),
-        (true, false) => Some(
-            "Container has a telemetry/update module loaded that the current selection keeps (component off)",
-        ),
-        (false, true) if post_delete_phase => Some(
-            "Module still loaded and not scheduled for deletion in this run (see post-run check)",
-        ),
+        (true, true) => Some((
+            "INFO",
+            format!(
+                "{leaf} is loaded by the NVIDIA container (PID {pid}); it can only be deleted after a restart."
+            ),
+        )),
+        (true, false) => Some((
+            "INFO",
+            format!("{leaf} is loaded by the NVIDIA container (PID {pid}) and kept (its component is off)."),
+        )),
+        (false, true) if post_delete_phase => Some((
+            "INFO",
+            format!(
+                "{leaf} is still loaded (PID {pid}) and was not queued for deletion; see the result below."
+            ),
+        )),
         _ => None,
     }
 }
@@ -49,17 +61,14 @@ pub fn loaded_module_message(
 /// selection, so a module the user keeps is not announced as a pending
 /// reboot deletion.
 pub fn inspect_nv_container_modules(post_delete_phase: bool, enabled: &crate::app::EnabledMap) {
-    if post_delete_phase {
-        log_line(
-            "INFO",
-            "Re-inspecting NVIDIA Container processes after deletion.",
-        );
-    } else {
-        log_line(
-            "INFO",
-            "Inspecting NVIDIA Container processes and loaded telemetry/profile-update modules.",
-        );
-    }
+    log_line(
+        DETAIL,
+        if post_delete_phase {
+            "Re-inspecting NVIDIA Container processes after deletion."
+        } else {
+            "Inspecting NVIDIA Container processes and loaded telemetry/profile-update modules."
+        },
+    );
 
     let processes = match ffi::enum_running_processes() {
         Ok(p) => p,
@@ -75,19 +84,19 @@ pub fn inspect_nv_container_modules(post_delete_phase: bool, enabled: &crate::ap
         }
     };
 
-    let mut containers_seen = 0usize;
+    let mut container_pids: Vec<u32> = Vec::new();
     for proc in processes {
         if !is_preserved_container_name(&proc.exe_name) {
             continue;
         }
-        containers_seen += 1;
+        container_pids.push(proc.pid);
         let pid_str = proc.pid.to_string();
         let container_key = format!("{}|{}", pid_str, proc.exe_name);
         let first_container_sighting =
             app::run_mut(|s| s.reported_containers.insert(container_key));
         if first_container_sighting {
             log_line(
-                "INFO",
+                DETAIL,
                 &format!("Container running: PID={} Name={}", pid_str, proc.exe_name),
             );
             add_action(
@@ -102,14 +111,26 @@ pub fn inspect_nv_container_modules(post_delete_phase: bool, enabled: &crate::ap
         let modules = match ffi::enum_process_modules(proc.pid) {
             Ok(m) => m,
             Err(e) => {
-                log_line(
-                    "WARN",
-                    &format!(
-                        "Module inspection failed for PID={}: {}",
-                        proc.pid,
-                        format_win_error(e)
-                    ),
-                );
+                const ERROR_ACCESS_DENIED: u32 = 5;
+                if e == ERROR_ACCESS_DENIED && !crate::sysinfo::is_admin() {
+                    // Expected without elevation (SYSTEM-owned service process).
+                    log_line(
+                        "INFO",
+                        &format!(
+                            "Cannot look inside the NVIDIA container (PID {}) without administrator rights; this check is skipped.",
+                            proc.pid
+                        ),
+                    );
+                } else {
+                    log_line(
+                        "WARN",
+                        &format!(
+                            "Could not inspect the NVIDIA container (PID {}): {}",
+                            proc.pid,
+                            format_win_error(e)
+                        ),
+                    );
+                }
                 continue;
             }
         };
@@ -136,17 +157,46 @@ pub fn inspect_nv_container_modules(post_delete_phase: bool, enabled: &crate::ap
                     &path,
                     &format!("PID={pid_str}"),
                 );
+                log_line(
+                    DETAIL,
+                    &format!("Loaded module: PID={pid_str} Module={path}"),
+                );
             }
-            if let Some(msg) =
-                loaded_module_message(post_delete_phase, first_sighting, targeted, scheduled)
-            {
-                log_line("INFO", &format!("{msg}: PID={pid_str} Module={path}"));
+            let leaf = std::path::Path::new(&path)
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.clone());
+            if let Some((level, msg)) = loaded_module_message(
+                post_delete_phase,
+                first_sighting,
+                targeted,
+                scheduled,
+                &leaf,
+                proc.pid,
+            ) {
+                log_line(level, &msg);
             }
         }
     }
-    if containers_seen == 0 && !post_delete_phase {
-        log_line("INFO", "No NVIDIA Container processes running.");
+    if !post_delete_phase {
+        log_line("INFO", &container_summary(&container_pids, app::opts(|o| o.preserve_nv_containers)));
     }
+}
+
+/// One console line about the NVIDIA container processes.
+pub fn container_summary(pids: &[u32], preserved: bool) -> String {
+    if pids.is_empty() {
+        return "NVIDIA Display Container: not running.".to_string();
+    }
+    let list = pids
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "NVIDIA Display Container: running (PID {list}){}.",
+        if preserved { ", kept" } else { "" }
+    )
 }
 
 /// Stop only explicit historical NVIDIA bloat executables, and verify the
@@ -158,7 +208,7 @@ pub fn kill_locker_processes(enabled: &crate::app::EnabledMap) {
     if !kill_lockers {
         log_line(
             "INFO",
-            "--kill-lockers not specified; process stopping skipped.",
+            "Processes: not stopped (--kill-lockers is not set).",
         );
         return;
     }
@@ -257,11 +307,12 @@ pub fn kill_locker_processes(enabled: &crate::app::EnabledMap) {
     log_line(
         "INFO",
         &if known_running == 0 {
-            "Locker processes: none of the known NVIDIA bloat processes is running.".to_string()
+            "Processes: no NVIDIA bloat process is running.".to_string()
         } else {
             format!(
-                "Locker processes: {known_running} known NVIDIA bloat process(es) running; \
-                 {verified} verified for termination, {deselected} skipped (component deselected)."
+                "Processes: {known_running} NVIDIA bloat process(es) running: {verified} {} stopped, \
+                 {deselected} left alone (component off).",
+                if execute { "will be" } else { "would be" }
             )
         },
     );
@@ -320,7 +371,10 @@ pub fn handle_services(enabled: &crate::app::EnabledMap) {
     let (kill_lockers, disable_services, delete_services, execute) = opts;
 
     if !kill_lockers && !disable_services && !delete_services {
-        log_line("INFO", "Service stopping/disable/delete skipped.");
+        log_line(
+            "INFO",
+            "Services: not checked (no stop/disable/delete option is set).",
+        );
         return;
     }
 
@@ -346,22 +400,27 @@ pub fn handle_services(enabled: &crate::app::EnabledMap) {
         }
     };
 
-    let scanned = services.len();
-    let (mut nvidia_context, mut targeted, mut deselected) = (0usize, 0usize, 0usize);
+    let mut counts = StageCounts {
+        scanned: services.len(),
+        ..StageCounts::default()
+    };
     for svc in services {
         let full = format!("{} ({})", svc.name, svc.display);
         if !ffi_process::has_strong_nvidia_named_target_context(&full) {
             continue;
         }
-        nvidia_context += 1;
+        counts.nvidia += 1;
         let preserve = app::opts(|o| o.preserve_nv_containers);
+        if preserve && is_preserved_container_name(&full) {
+            counts.preserved += 1;
+        }
         let component = match service_action_decision(&svc.name, &svc.display, enabled, preserve) {
             ActionDecision::Allowed(c) => {
-                targeted += 1;
+                counts.targeted += 1;
                 c
             }
             ActionDecision::ComponentDisabled(c) => {
-                deselected += 1;
+                counts.deselected += 1;
                 log_action(
                     "Service",
                     "SKIP",
@@ -473,24 +532,52 @@ pub fn handle_services(enabled: &crate::app::EnabledMap) {
             );
         }
     }
-    log_line(
-        "INFO",
-        &stage_summary("Services", scanned, nvidia_context, targeted, deselected),
-    );
+    log_line("INFO", &stage_summary("Services", &counts));
 }
 
-/// One summary line per service/task stage, so a log shows that the stage
-/// ran even when nothing matched.
-pub fn stage_summary(
-    stage: &str,
-    scanned: usize,
-    nvidia_context: usize,
-    targeted: usize,
-    deselected: usize,
-) -> String {
+/// Tallies of one service/task stage.
+#[derive(Default)]
+pub struct StageCounts {
+    pub scanned: usize,
+    /// Entries with a strong NVIDIA anchor.
+    pub nvidia: usize,
+    /// Of `nvidia`: owned by an enabled component (will be changed).
+    pub targeted: usize,
+    /// Of `nvidia`: owned by a deselected component (left alone).
+    pub deselected: usize,
+    /// Of `nvidia`: the preserved NVIDIA Display Container.
+    pub preserved: usize,
+}
+
+/// One plain-language line per service/task stage, so the log shows that the
+/// stage ran and why each NVIDIA entry was or was not touched.
+pub fn stage_summary(stage: &str, c: &StageCounts) -> String {
+    if c.nvidia == 0 {
+        return format!("{stage}: {} checked, none from NVIDIA.", c.scanned);
+    }
+    let mut parts: Vec<String> = Vec::new();
+    if c.preserved > 0 {
+        parts.push(format!("{} kept (NVIDIA Display Container)", c.preserved));
+    }
+    if c.deselected > 0 {
+        parts.push(format!("{} left alone (component off)", c.deselected));
+    }
+    let unrecognized = c
+        .nvidia
+        .saturating_sub(c.targeted + c.deselected + c.preserved);
+    if unrecognized > 0 {
+        parts.push(format!("{unrecognized} not recognized as bloat (left alone)"));
+    }
+    parts.push(if c.targeted == 0 {
+        "nothing to change".to_string()
+    } else {
+        format!("{} to change", c.targeted)
+    });
     format!(
-        "{stage}: scanned {scanned}; {nvidia_context} with NVIDIA context; \
-         {targeted} targeted by the selection, {deselected} skipped (component deselected)."
+        "{stage}: {} checked, {} from NVIDIA: {}.",
+        c.scanned,
+        c.nvidia,
+        parts.join(", ")
     )
 }
 
@@ -509,7 +596,10 @@ pub fn handle_scheduled_tasks(enabled: &crate::app::EnabledMap) {
     });
 
     if !disable_tasks && !delete_tasks {
-        log_line("INFO", "Scheduled task handling skipped.");
+        log_line(
+            "INFO",
+            "Scheduled tasks: not checked (task handling is turned off).",
+        );
         return;
     }
 
@@ -572,20 +662,22 @@ pub fn handle_scheduled_tasks(enabled: &crate::app::EnabledMap) {
 
     let schtasks = system_dir_file("schtasks.exe").ok();
 
-    let scanned = task_names.len();
-    let (mut nvidia_context, mut targeted, mut deselected) = (0usize, 0usize, 0usize);
+    let mut counts = StageCounts {
+        scanned: task_names.len(),
+        ..StageCounts::default()
+    };
     for task_name in task_names {
         if !ffi_process::has_strong_nvidia_named_target_context(&task_name) {
             continue;
         }
-        nvidia_context += 1;
+        counts.nvidia += 1;
         let component = match task_action_decision(&task_name, enabled) {
             ActionDecision::Allowed(c) => {
-                targeted += 1;
+                counts.targeted += 1;
                 c
             }
             ActionDecision::ComponentDisabled(c) => {
-                deselected += 1;
+                counts.deselected += 1;
                 log_action(
                     "ScheduledTask",
                     "SKIP",
@@ -644,10 +736,7 @@ pub fn handle_scheduled_tasks(enabled: &crate::app::EnabledMap) {
             }
         }
     }
-    log_line(
-        "INFO",
-        &stage_summary("Scheduled tasks", scanned, nvidia_context, targeted, deselected),
-    );
+    log_line("INFO", &stage_summary("Scheduled tasks", &counts));
 }
 
 #[cfg(test)]
@@ -658,31 +747,68 @@ mod tests {
     fn kept_module_is_never_announced_as_reboot_deletion() {
         // Regression: nvprofileupdaterplugin.dll was reported as "deletion may
         // require reboot" / "reboot will finalize" with its component off.
-        let first = loaded_module_message(false, true, false, false).unwrap();
-        assert!(first.contains("keeps"), "{first}");
-        assert_eq!(loaded_module_message(true, false, false, false), None);
+        let (level, msg) =
+            loaded_module_message(false, true, false, false, "nvprofileupdaterplugin.dll", 3656)
+                .unwrap();
+        assert_eq!(level, "INFO");
+        assert!(msg.contains("kept (its component is off)"), "{msg}");
+        assert!(msg.starts_with("nvprofileupdaterplugin.dll"), "{msg}");
+        assert_eq!(loaded_module_message(true, false, false, false, "x.dll", 1), None);
     }
 
     #[test]
     fn targeted_module_messages_follow_scheduling_outcome() {
-        assert!(loaded_module_message(false, true, true, false)
-            .unwrap()
-            .contains("removes"));
-        assert!(loaded_module_message(true, false, true, true)
-            .unwrap()
-            .contains("scheduled for deletion"));
-        assert!(loaded_module_message(true, false, true, false)
-            .unwrap()
-            .contains("not scheduled"));
+        let first = loaded_module_message(false, true, true, false, "_nvtopps.dll", 1).unwrap();
+        assert!(first.1.contains("only be deleted after a restart"), "{first:?}");
+        let queued = loaded_module_message(true, false, true, true, "_nvtopps.dll", 1).unwrap();
+        assert_eq!(queued.0, DETAIL, "the result section already says it");
+        let missed = loaded_module_message(true, false, true, false, "_nvtopps.dll", 1).unwrap();
+        assert!(missed.1.contains("not queued"), "{missed:?}");
         // Pre-phase repeats stay quiet.
-        assert_eq!(loaded_module_message(false, false, true, false), None);
+        assert_eq!(loaded_module_message(false, false, true, false, "a.dll", 1), None);
     }
 
     #[test]
-    fn stage_summary_reports_zero_matches_explicitly() {
+    fn stage_summary_explains_every_nvidia_entry() {
+        let none = StageCounts {
+            scanned: 276,
+            ..StageCounts::default()
+        };
         assert_eq!(
-            stage_summary("Services", 312, 4, 0, 0),
-            "Services: scanned 312; 4 with NVIDIA context; 0 targeted by the selection, 0 skipped (component deselected)."
+            stage_summary("Scheduled tasks", &none),
+            "Scheduled tasks: 276 checked, none from NVIDIA."
+        );
+        // The case from the 2026-10-22 log: one NVIDIA service, the container.
+        let container = StageCounts {
+            scanned: 299,
+            nvidia: 1,
+            preserved: 1,
+            ..StageCounts::default()
+        };
+        assert_eq!(
+            stage_summary("Services", &container),
+            "Services: 299 checked, 1 from NVIDIA: 1 kept (NVIDIA Display Container), nothing to change."
+        );
+        let mixed = StageCounts {
+            scanned: 10,
+            nvidia: 4,
+            targeted: 1,
+            deselected: 1,
+            preserved: 1,
+        };
+        assert_eq!(
+            stage_summary("Services", &mixed),
+            "Services: 10 checked, 4 from NVIDIA: 1 kept (NVIDIA Display Container), \
+             1 left alone (component off), 1 not recognized as bloat (left alone), 1 to change."
+        );
+    }
+
+    #[test]
+    fn container_summary_lists_pids() {
+        assert_eq!(container_summary(&[], true), "NVIDIA Display Container: not running.");
+        assert_eq!(
+            container_summary(&[2800, 3656], true),
+            "NVIDIA Display Container: running (PID 2800, 3656), kept."
         );
     }
 }

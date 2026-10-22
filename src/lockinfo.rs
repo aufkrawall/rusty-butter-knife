@@ -182,10 +182,18 @@ fn analyze_entry(entry: &FailedEntry, exe_by_pid: &BTreeMap<u32, String>) -> Ent
 /// Log-ready description of one candidate's failed deletion.
 pub struct FailureReport {
     pub level: &'static str,
+    /// Raw detail for the JSON action record.
     pub detail: String,
-    /// Per-entry lines (directory candidates only).
+    /// Human wording: `<label> [component]: path (<note>)`.
+    pub label: &'static str,
+    pub note: String,
+    /// Per-entry lines (directory candidates only), logged at `entry_level`:
+    /// file-only for expected container locks, WARN otherwise.
     pub entry_lines: Vec<String>,
+    pub entry_level: &'static str,
 }
+
+const LABEL_DEFERRED: &str = "In use - will be deleted at the next restart";
 
 /// Explain a failed deletion: who holds what, and whether this is the
 /// expected case of an NVIDIA container keeping a file in use (INFO, the
@@ -212,41 +220,70 @@ pub fn describe_delete_failure(
     );
     let expected = level == "INFO";
 
+    let entry_level = if expected { crate::logging::DETAIL } else { "WARN" };
     if !is_directory {
         let (entry, analysis) = (&failures[0], &analyses[0]);
-        let detail = if expected {
-            format!(
-                "In use by NVIDIA container ({}); deferred to reboot [{}]",
-                analysis.holders.join("; "),
-                entry.message
-            )
+        let report = if expected {
+            let holders = analysis.holders.join("; ");
+            FailureReport {
+                level,
+                detail: format!(
+                    "In use by NVIDIA container ({holders}); deferred to reboot [{}]",
+                    entry.message
+                ),
+                label: LABEL_DEFERRED,
+                note: format!("held by {holders}"),
+                entry_lines: Vec::new(),
+                entry_level,
+            }
         } else {
-            format!("Delete failed: {}{}", entry.message, analysis.suffix())
+            FailureReport {
+                level,
+                detail: format!("Delete failed: {}{}", entry.message, analysis.suffix()),
+                label: "Could not delete",
+                note: format!("{}{}", entry.message, analysis.suffix()),
+                entry_lines: Vec::new(),
+                entry_level,
+            }
         };
-        return FailureReport {
-            level,
-            detail,
-            entry_lines: Vec::new(),
-        };
+        return report;
     }
 
     let n = failures.len();
-    let detail = if expected {
+    let entries = |n: usize| if n == 1 { "entry" } else { "entries" };
+    let (detail, label, note) = if expected {
         let holders: BTreeSet<&str> = analyses
             .iter()
             .flat_map(|a| a.holders.iter().map(String::as_str))
             .collect();
-        format!(
-            "Removed entries={removed}; {n} entr{} in use by NVIDIA container ({}) deferred to reboot",
-            if n == 1 { "y" } else { "ies" },
-            holders.into_iter().collect::<Vec<_>>().join("; ")
+        let holders = holders.into_iter().collect::<Vec<_>>().join("; ");
+        let removed_now = if removed > 0 {
+            format!("{removed} {} removed now, ", entries(removed as usize))
+        } else {
+            String::new()
+        };
+        (
+            format!(
+                "Removed entries={removed}; {n} entr{} in use by NVIDIA container ({holders}) deferred to reboot",
+                if n == 1 { "y" } else { "ies" },
+            ),
+            LABEL_DEFERRED,
+            format!("{removed_now}{n} {} held by {holders}", entries(n)),
         )
     } else {
-        format!(
-            "Delete failed: removed {removed} entries, {n} could not be removed (first: {}: {}{})",
-            display_path(&failures[0].path),
-            failures[0].message,
-            analyses[0].suffix()
+        (
+            format!(
+                "Delete failed: removed {removed} entries, {n} could not be removed (first: {}: {}{})",
+                display_path(&failures[0].path),
+                failures[0].message,
+                analyses[0].suffix()
+            ),
+            "Could not fully delete",
+            format!(
+                "{removed} {} removed, {n} {} could not be removed - listed below",
+                entries(removed as usize),
+                entries(n)
+            ),
         )
     };
     let mut entry_lines: Vec<String> = failures
@@ -254,7 +291,7 @@ pub fn describe_delete_failure(
         .zip(analyses.iter())
         .map(|(f, a)| {
             format!(
-                "  Entry not removed: {} :: {}{}",
+                "  - not removed: {} ({}{})",
                 display_path(&f.path),
                 f.message,
                 a.suffix()
@@ -263,14 +300,17 @@ pub fn describe_delete_failure(
         .collect();
     if n > MAX_LISTED_ENTRIES {
         entry_lines.push(format!(
-            "  ... and {} more entries not removed",
+            "  - ... and {} more entries not removed",
             n - MAX_LISTED_ENTRIES
         ));
     }
     FailureReport {
         level,
         detail,
+        label,
+        note,
         entry_lines,
+        entry_level,
     }
 }
 
@@ -327,15 +367,17 @@ pub fn note_pending_reboot_deletions() {
     }
     let nvidia = all.iter().filter(|p| is_nvidia_context_string(p)).count();
     let total = all.len();
+    log_line(
+        crate::logging::DETAIL,
+        &format!("Reboot-pending deletions registered by Windows: {total} ({nvidia} under NVIDIA paths)."),
+    );
     let message = if let Some(err) = read_error {
-        format!("Reboot-pending deletions: could not be read completely ({err}).")
-    } else if total == 0 {
-        "Reboot-pending deletions: none registered.".to_string()
+        format!("Waiting for a restart: could not check ({err}).")
     } else if nvidia == 0 {
-        format!("Reboot-pending deletions: {total} registered, none under NVIDIA paths.")
+        "Waiting for a restart: no NVIDIA deletions from earlier runs.".to_string()
     } else {
         format!(
-            "Reboot-pending deletions: {nvidia} under NVIDIA paths (of {total} registered) are still waiting for a reboot, likely from an earlier run."
+            "Waiting for a restart: {nvidia} NVIDIA item(s) from an earlier run will be deleted at the next restart."
         )
     };
     log_line("INFO", &message);
@@ -359,7 +401,7 @@ pub fn note_candidates_already_pending() {
         log_line(
             "INFO",
             &format!(
-                "{already} of {total} candidate path(s) are already queued for deletion at the next reboot by an earlier run; a reboot completes them."
+                "{already} of the {total} item(s) found are already queued for deletion at the next restart by an earlier run; restarting completes them."
             ),
         );
     }

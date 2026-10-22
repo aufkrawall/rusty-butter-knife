@@ -141,9 +141,16 @@ fn wmain_try(args: &[String]) -> Result<i32, String> {
     }
 
     let log_path_display = app::run(|s| s.log_path.to_string_lossy().into_owned());
+    // Shown once per run: stages started by a parent (UAC instance, SYSTEM
+    // worker) append to the same file the first stage already announced.
+    let started_by_parent = app::opts(|o| o.ti_child || !o.abort_event.is_empty());
     log_line(
-        "INFO",
-        &format!("Run log (all stages of this run append to this single file): {log_path_display}"),
+        if started_by_parent {
+            logging::DETAIL
+        } else {
+            "INFO"
+        },
+        &format!("Log file (all stages of this run write here): {log_path_display}"),
     );
 
     let bad_args = app::opts(|o| o.unknown_args.clone());
@@ -176,14 +183,20 @@ fn wmain_try(args: &[String]) -> Result<i32, String> {
     {
         log_line(
             "INFO",
-            "Administrator rights required; relaunching elevated via UAC with the confirmed selection.",
+            "Administrator rights are needed; asking Windows for them (UAC prompt). The work continues in a new window.",
         );
         match relaunch_elevated_for_wizard() {
             Some(child_exit) => {
-                log_line(
-                    "INFO",
-                    &format!("Elevated instance finished with exit code {child_exit}."),
-                );
+                if child_exit == EXIT_OK {
+                    log_line("INFO", "The elevated window finished successfully.");
+                } else {
+                    log_line(
+                        "WARN",
+                        &format!(
+                            "The elevated window ended with exit code {child_exit}; see the log for details."
+                        ),
+                    );
+                }
                 return Ok(child_exit);
             }
             None => {
@@ -251,7 +264,7 @@ fn wmain_try(args: &[String]) -> Result<i32, String> {
             let ti_result = tasksched::attempt_trusted_installer_relaunch();
             if ti_result.child_status_seen && ti_result.child_succeeded {
                 log_line(
-                    "INFO",
+                    logging::DETAIL,
                     "Parent process finished after TI child completion. Everything (including the worker's report) is in the shared run log.",
                 );
                 write_status_json(EXIT_OK, "ok", "TI child completed");

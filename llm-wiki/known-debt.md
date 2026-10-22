@@ -17,7 +17,7 @@ becomes cheap or safe to fix should be fixed and removed from this page.
 
 ## No sanitizers/fuzzing; partial destructive-path coverage
 
-As of 2026-10-22 the Rust crate has 80 tests (`cargo test --all-targets`) and a
+As of 2026-10-22 the Rust crate has 88 tests (`cargo test --all-targets`) and a
 Windows GitHub Actions gate that runs build, clippy `-D warnings`, all tests and
 safe CLI smokes on pushes/pull requests. Existing source is not guaranteed
 whole-tree rustfmt-clean; the project intentionally avoids unrelated formatter

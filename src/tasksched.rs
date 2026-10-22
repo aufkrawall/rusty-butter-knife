@@ -198,7 +198,11 @@ pub fn attempt_trusted_installer_relaunch() -> TiRelaunchResult {
 
     log_line(
         "INFO",
-        "Destructive execution runs in a privileged worker started by a one-shot scheduled task (COM API). The task requests TrustedInstaller; Windows runs it as SYSTEM, which suffices.",
+        "Starting the privileged worker (a one-time scheduled task that runs as SYSTEM)...",
+    );
+    log_line(
+        crate::logging::DETAIL,
+        "Worker task is registered via the Task Scheduler COM API and requests TrustedInstaller; Windows runs it as SYSTEM, which suffices.",
     );
 
     let task_name = format!("{}{}", app::K_TI_TASK_PREFIX, ffi_task_id());
@@ -228,7 +232,10 @@ pub fn attempt_trusted_installer_relaunch() -> TiRelaunchResult {
 
     // Clean leftovers of crashed previous runs before registering our own task.
     for name in session.sweep_stale_tasks(app::K_TI_TASK_PREFIX) {
-        log_line("INFO", &format!("Removed stale TI scheduled task: {name}"));
+        log_line(
+            "INFO",
+            &format!("Removed a leftover worker task from an earlier interrupted run: {name}"),
+        );
     }
 
     // Remove previous instance if present, then register + run ours.
@@ -249,10 +256,9 @@ pub fn attempt_trusted_installer_relaunch() -> TiRelaunchResult {
             return res;
         }
     };
-    log_line("INFO", &format!("Task registered: {task_name}"));
     log_line(
-        "INFO",
-        "Task launched. Waiting for the SYSTEM worker to finish (exit code via LastTaskResult).",
+        crate::logging::DETAIL,
+        &format!("Task registered and launched: {task_name}. Waiting for the SYSTEM worker to finish (exit code via LastTaskResult)."),
     );
 
     let log_path = app::run(|s| s.log_path.clone());
@@ -317,10 +323,16 @@ pub fn attempt_trusted_installer_relaunch() -> TiRelaunchResult {
                 res.child_exit_code = exit_code;
                 res.child_succeeded = exit_code == 0;
                 res.detail = format!("TI child finished: exit=0x{exit_code:X}");
-                log_line(
-                    if res.child_succeeded { "INFO" } else { "ERROR" },
-                    &res.detail,
-                );
+                if res.child_succeeded {
+                    log_line(crate::logging::DETAIL, &res.detail);
+                } else {
+                    log_line(
+                        "ERROR",
+                        &format!(
+                            "The privileged worker failed (exit code 0x{exit_code:X}); see the lines above."
+                        ),
+                    );
+                }
                 timed_out = false;
                 break;
             }
@@ -339,7 +351,7 @@ pub fn attempt_trusted_installer_relaunch() -> TiRelaunchResult {
         }
 
         if silence_start.elapsed().as_secs() >= 15 {
-            let wait_msg = format!("Still waiting for TI child... ({waited}s)");
+            let wait_msg = format!("Still working... ({waited} s)");
             log_line("INFO", &wait_msg);
             let written_len =
                 format!("[{}] [INFO] {wait_msg}\n", crate::winfmt::log_time_stamp()).len() as u64;
@@ -371,18 +383,6 @@ pub fn attempt_trusted_installer_relaunch() -> TiRelaunchResult {
 
     session.finish_task(&registered, &task_name);
     res
-}
-
-fn parse_log_level(line: &str) -> &str {
-    if let Some(rest) = line.strip_prefix('[') {
-        if let Some(idx) = rest.find("] [") {
-            let after = &rest[idx + 3..];
-            if let Some(end_idx) = after.find(']') {
-                return &after[..end_idx];
-            }
-        }
-    }
-    "INFO"
 }
 
 fn stream_child_log_lines(
@@ -425,15 +425,16 @@ fn stream_child_log_lines(
     };
     *cursor += valid_len as u64;
     let text = String::from_utf8_lossy(&buf[..valid_len]);
+    // Every consumed line counts as worker activity (heartbeat logic), but
+    // only timestamped records are shown, in the same human form the worker
+    // would print itself. Untimestamped lines belong to file-only blocks
+    // (candidate table, post-run check, JSON report).
     let mut line_count = 0;
-    let colored = !crate::logging::no_color();
     for line in text.lines() {
-        let level = parse_log_level(line);
-        let color = crate::logging::color_for_level(level);
-        crate::console::set_color(color, colored);
-        crate::console::out(&format!("{line}\n"));
-        crate::console::set_color(crate::console::COLOR_WHITE, colored);
         line_count += 1;
+        if let Some((ts, level, message)) = crate::logging::parse_log_record(line) {
+            crate::logging::print_console_record(level, ts, message);
+        }
     }
     line_count
 }
@@ -496,13 +497,18 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_log_level() {
-        assert_eq!(parse_log_level("[2026-09-04 07:24:44] [INFO] Task registered"), "INFO");
-        assert_eq!(parse_log_level("[2026-09-04 07:24:44] [ERROR] Something failed"), "ERROR");
-        assert_eq!(parse_log_level("[2026-09-04 07:24:44] [WARN] Warning message"), "WARN");
-        assert_eq!(parse_log_level("[2026-09-04 07:24:44] [DRYRUN] Would delete"), "DRYRUN");
-        assert_eq!(parse_log_level("[2026-09-04 07:24:44] [DELETED] File deleted"), "DELETED");
-        assert_eq!(parse_log_level("Plain line without brackets"), "INFO");
+    fn test_parse_log_record() {
+        use crate::logging::parse_log_record;
+        assert_eq!(
+            parse_log_record("[2026-09-04 07:24:44] [INFO] Task registered"),
+            Some(("2026-09-04 07:24:44", "INFO", "Task registered"))
+        );
+        assert_eq!(
+            parse_log_record("[2026-09-04 07:24:44] [WARN] a ] [b"),
+            Some(("2026-09-04 07:24:44", "WARN", "a ] [b"))
+        );
+        assert_eq!(parse_log_record("Plain line without brackets"), None);
+        assert_eq!(parse_log_record("  {\"type\": \"DeletePath\"}"), None);
     }
 
     #[test]

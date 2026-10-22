@@ -8,7 +8,7 @@ use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use crate::app;
-use crate::logging::{append_block_serialized, log_line};
+use crate::logging::{append_block_serialized, log_line, DETAIL};
 use crate::matching::match_component_for_path;
 use crate::matching::should_prune_traversal;
 use crate::types::Candidate;
@@ -179,7 +179,8 @@ pub fn discover_candidates(enabled: &crate::app::EnabledMap) {
         .map(|p| p.to_string_lossy().into_owned())
         .collect::<Vec<_>>()
         .join("; ");
-    log_line("INFO", &format!("Search roots: {roots_line}"));
+    log_line(DETAIL, &format!("Search roots: {roots_line}"));
+    log_line("INFO", &search_roots_summary(&roots));
 
     let mut seen: HashSet<String> = HashSet::new();
 
@@ -233,7 +234,8 @@ pub fn discover_candidates(enabled: &crate::app::EnabledMap) {
 
     app::run_mut(|s| collapse_nested_candidates(&mut s.candidates));
     let candidate_count = app::run(|s| s.candidates.len());
-    log_line("INFO", &format!("Candidate count: {candidate_count}"));
+    // Cross-version marker (tally_previous_logs parses it): keep verbatim.
+    log_line(DETAIL, &format!("Candidate count: {candidate_count}"));
 
     // Per-component breakdown so an already-clean system explicitly reports
     // 0 for every area instead of one opaque global count.
@@ -261,14 +263,41 @@ pub fn discover_candidates(enabled: &crate::app::EnabledMap) {
     }
     let log_path = app::run(|s| s.log_path.clone());
     append_block_serialized(&log_path, &ss);
-    log_line("INFO", &format!("Discovered per component: {line}"));
+    log_line(DETAIL, &format!("Discovered per component: {line}"));
+    log_line("INFO", &found_summary(&per_component));
+}
 
-    if candidate_count == 0 {
-        log_line(
-            "INFO",
-            "Nothing matched - the system appears already clean (or only disabled optional components were scanned). For what earlier runs removed, see their logs / the previous-run history line.",
-        );
+/// "Searching N NVIDIA folders (...)": the full list goes to the log only.
+pub fn search_roots_summary(roots: &[PathBuf]) -> String {
+    let lower: Vec<String> = roots.iter().map(|p| path_lower(p)).collect();
+    let packages = lower
+        .iter()
+        .filter(|p| p.contains("\\driverstore\\filerepository\\"))
+        .count();
+    let profiles = lower.iter().filter(|p| p.contains("\\appdata\\")).count();
+    let program = roots.len() - packages - profiles;
+    format!(
+        "Searching {} NVIDIA folders ({program} program/data, {profiles} in user profiles, {packages} driver packages).",
+        roots.len()
+    )
+}
+
+/// One line naming what was found, by component; non-zero entries only.
+pub fn found_summary(per_component: &[(String, usize)]) -> String {
+    let total: usize = per_component.iter().map(|(_, n)| n).sum();
+    if total == 0 {
+        return "Found nothing to remove.".to_string();
     }
+    let parts = per_component
+        .iter()
+        .filter(|(_, n)| *n > 0)
+        .map(|(k, n)| format!("{k} {n}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "Found {total} item{} to remove: {parts}.",
+        if total == 1 { "" } else { "s" }
+    )
 }
 
 /// Depth-first traversal with prune support and abort checks. Symlinks are
@@ -279,7 +308,7 @@ fn walk(dir: &Path, enabled: &crate::app::EnabledMap, visit: &mut dyn FnMut(&Pat
         Err(e) => {
             log_line(
                 "WARN",
-                &format!("Traversal warning for {}: {}", dir.display(), e),
+                &format!("Could not read folder {}: {}", dir.display(), e),
             );
             return;
         }
@@ -355,14 +384,14 @@ pub fn tally_previous_logs() {
     if log_files == 0 {
         log_line(
             "INFO",
-            "Previous-run history: no earlier debloat-*.log files beside the executable.",
+            "Earlier runs: none logged beside the program.",
         );
     } else {
         log_line(
             "INFO",
             &format!(
-                "Previous-run history: {log_files} earlier log file(s), {runs} recorded run(s), \
-                 {candidates_found} candidate paths discovered across them (see those logs for the exact paths)."
+                "Earlier runs: {runs} logged beside the program ({log_files} log file(s); \
+                 {candidates_found} item(s) found across them - see those logs for details)."
             ),
         );
     }
@@ -407,6 +436,36 @@ mod tests {
             component_name: "Telemetry".to_string(),
             is_directory,
         }
+    }
+
+    #[test]
+    fn found_summary_names_only_nonzero_components() {
+        let per = vec![
+            ("Telemetry".to_string(), 7),
+            ("UpdateAndProfileUpdater".to_string(), 0),
+            ("Installer2Cache".to_string(), 1),
+        ];
+        assert_eq!(
+            found_summary(&per),
+            "Found 8 items to remove: Telemetry 7, Installer2Cache 1."
+        );
+        let none = vec![("Telemetry".to_string(), 0)];
+        assert_eq!(found_summary(&none), "Found nothing to remove.");
+    }
+
+    #[test]
+    fn search_roots_summary_groups_locations() {
+        let roots = [
+            r"C:\Program Files\NVIDIA Corporation",
+            r"C:\ProgramData\NVIDIA",
+            r"C:\Users\a\AppData\Local\NVIDIA",
+            r"C:\WINDOWS\System32\DriverStore\FileRepository\nv_dispi.inf_amd64_1",
+        ]
+        .map(PathBuf::from);
+        assert_eq!(
+            search_roots_summary(&roots),
+            "Searching 4 NVIDIA folders (2 program/data, 1 in user profiles, 1 driver packages)."
+        );
     }
 
     #[test]

@@ -3,7 +3,7 @@
 use crate::app;
 use crate::console::{self, COLOR_CYAN, COLOR_RED, COLOR_WHITE, COLOR_YELLOW};
 use crate::winfmt::log_time_stamp;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 /// Named mutex serializing large multi-line appends (candidates list,
 /// reports) across all processes of a run so they cannot interleave in the
@@ -51,12 +51,127 @@ pub fn append_block_serialized(path: &std::path::Path, text: &str) {
     }
 }
 
+/// File-only level: diagnostic detail kept in the run log but never shown on
+/// the console (also skipped when a parent streams a worker's log lines).
+pub const DETAIL: &str = "DETAIL";
+/// Section heading: rendered as a `== text ==` heading on the console.
+pub const STEP: &str = "STEP";
+
+/// WARN/ERROR/FATAL lines logged by this process (for the closing summary).
+static PROBLEMS_LOGGED: AtomicUsize = AtomicUsize::new(0);
+
+pub fn problems_logged() -> usize {
+    PROBLEMS_LOGGED.load(Ordering::SeqCst)
+}
+
 pub(crate) fn color_for_level(level: &str) -> u16 {
     match level {
         "ERROR" | "FATAL" => COLOR_RED,
         "WARN" => COLOR_YELLOW,
-        "DRYRUN" => COLOR_CYAN,
+        "DRYRUN" | STEP => COLOR_CYAN,
         _ => COLOR_WHITE,
+    }
+}
+
+/// Human console rendering of one log record; None = file-only. The log
+/// file keeps the full `[date time] [LEVEL] message` form for tools.
+pub fn render_console(level: &str, timestamp: &str, message: &str) -> Option<String> {
+    let clock = timestamp.rsplit(' ').next().unwrap_or(timestamp);
+    match level {
+        DETAIL => None,
+        STEP => Some(format!("\n== {message} ==\n")),
+        "WARN" => Some(format!("{clock}  WARNING: {message}\n")),
+        "ERROR" | "FATAL" => Some(format!("{clock}  {level}: {message}\n")),
+        _ => Some(format!("{clock}  {message}\n")),
+    }
+}
+
+/// Split a run-log line `[timestamp] [LEVEL] message` into its parts. None
+/// for untimestamped lines, which only occur inside multi-line blocks
+/// (candidate table, post-run check, JSON report).
+pub fn parse_log_record(line: &str) -> Option<(&str, &str, &str)> {
+    let rest = line.strip_prefix('[')?;
+    let (ts, rest) = rest.split_once("] [")?;
+    let (level, message) = rest.split_once("] ")?;
+    Some((ts, level, message))
+}
+
+/// Log messages stay single-line: an embedded line break would create an
+/// untimestamped line that readers treat as block content.
+fn one_line(message: &str) -> String {
+    message.replace("\r\n", " | ").replace(['\r', '\n'], " | ")
+}
+
+/// Human wording for an action record: `<what happened> [component]: path
+/// (detail)`. The JSON report keeps the raw kind/status/detail fields.
+pub fn action_line(kind: &str, status: &str, component: &str, path: &str, detail: &str) -> String {
+    let label = match (kind, status) {
+        ("DeletePath", "DRYRUN") => "Would delete",
+        ("DeletePath", "SKIP") => "Skipped",
+        ("DeletePath", "WARN") => "Could not delete",
+        ("DeletePath", _) => "Deleted",
+        ("ScheduleDelete", "WARN") => "Could not queue for deletion at restart",
+        ("ScheduleDelete", _) => "Queued for deletion at restart",
+        ("KillProcess", "DRYRUN") => "Would stop process",
+        ("KillProcess", "SKIP") => "Left process running",
+        ("KillProcess", "WARN") => "Could not stop process",
+        ("KillProcess", _) => "Stopped process",
+        ("StopService", "DRYRUN") => "Would stop service",
+        ("StopService", "WARN") => "Could not stop service",
+        ("StopService", _) if detail == "Stopped" => "Stopped service",
+        ("StopService", _) => "Service was not running",
+        ("DisableService", "DRYRUN") => "Would disable service",
+        ("DisableService", "WARN") => "Could not disable service",
+        ("DisableService", _) => "Disabled service",
+        ("DeleteService", "DRYRUN") => "Would delete service",
+        ("DeleteService", "WARN") => "Could not delete service",
+        ("DeleteService", _) => "Deleted service",
+        ("Service", "SKIP") => "Left service unchanged",
+        ("Service", _) => "Could not open service",
+        ("DeleteTask", "DRYRUN") => "Would delete scheduled task",
+        ("DeleteTask", "WARN") => "Could not delete scheduled task",
+        ("DeleteTask", _) => "Deleted scheduled task",
+        ("DisableTask", "DRYRUN") => "Would disable scheduled task",
+        ("DisableTask", "WARN") => "Could not disable scheduled task",
+        ("DisableTask", _) => "Disabled scheduled task",
+        ("ScheduledTask", "SKIP") => "Left scheduled task unchanged",
+        _ => {
+            let mut msg = format!("{kind} [{component}] {path}");
+            if !detail.is_empty() {
+                msg.push_str(" :: ");
+                msg.push_str(detail);
+            }
+            return msg;
+        }
+    };
+    let mut msg = label.to_string();
+    if !component.is_empty() && component != "RebootDelete" {
+        msg.push_str(&format!(" [{component}]"));
+    }
+    msg.push_str(&format!(": {path}"));
+    let detail = human_detail(detail);
+    if !detail.is_empty() {
+        msg.push_str(&format!(" ({detail})"));
+    }
+    msg
+}
+
+/// Drop details the label already says; translate terse internal ones.
+fn human_detail(detail: &str) -> String {
+    match detail {
+        "" | "file" | "Deleted file" | "Stopped" | "Already stopped" | "Not running"
+        | "Disabled" | "Deleted" | "Pending delete at reboot" | "Terminate requested" => {
+            String::new()
+        }
+        "directory" => "folder".to_string(),
+        "component deselected" => "component off".to_string(),
+        "Unsafe recursive directory target" => {
+            "protected driver folder, never deleted as a whole".to_string()
+        }
+        d => match d.strip_prefix("Removed entries=") {
+            Some(n) => format!("folder, {n} entries"),
+            None => d.to_string(),
+        },
     }
 }
 
@@ -69,16 +184,29 @@ pub(crate) fn no_color() -> bool {
     app::opts(|o| o.no_color)
 }
 
-/// Port of `logLine`: console line with timestamp prefix + level color,
-/// plus UTF-8 append to the single run log. Append failures are surfaced on
-/// stderr exactly once per run instead of being swallowed.
-pub fn log_line(level: &str, message: &str) {
-    let line = format!("[{}] [{}] {message}\n", log_time_stamp(), level);
-    let color = color_for_level(level);
+/// Print one record on the console in its human form (nothing for DETAIL).
+pub(crate) fn print_console_record(level: &str, timestamp: &str, message: &str) {
+    let Some(text) = render_console(level, timestamp, message) else {
+        return;
+    };
     let colored = !no_color();
-    console::set_color(color, colored);
-    console::out(&line);
+    console::set_color(color_for_level(level), colored);
+    console::out(&text);
     console::set_color(COLOR_WHITE, colored);
+}
+
+/// Port of `logLine`: human console line (see `render_console`) plus the
+/// full `[timestamp] [LEVEL] message` UTF-8 append to the single run log.
+/// Append failures are surfaced on stderr exactly once per run instead of
+/// being swallowed.
+pub fn log_line(level: &str, message: &str) {
+    let message = one_line(message);
+    let timestamp = log_time_stamp();
+    let line = format!("[{timestamp}] [{level}] {message}\n");
+    if matches!(level, "WARN" | "ERROR" | "FATAL") {
+        PROBLEMS_LOGGED.fetch_add(1, Ordering::SeqCst);
+    }
+    print_console_record(level, &timestamp, &message);
     // Pre-init FATAL lines have no run log yet; skip the append instead of
     // panicking inside the FATAL handler.
     if let Some(log_path) = app::run_opt(|s| s.log_path.clone()) {
@@ -101,21 +229,67 @@ pub fn add_action(kind: &str, status: &str, component: &str, path: &str, detail:
     });
 }
 
-/// Port of `logAction`.
+/// Port of `logAction`: records the action and logs its human wording at
+/// the action's status level.
 pub fn log_action(kind: &str, status: &str, component: &str, path: &str, detail: &str) {
     add_action(kind, status, component, path, detail);
-    let mut msg = format!("{kind} [{component}] {path}");
-    if !detail.is_empty() {
-        msg.push_str(" :: ");
-        msg.push_str(detail);
-    }
-    log_line(status, &msg);
+    log_line(status, &action_line(kind, status, component, path, detail));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn console_rendering_is_human_and_detail_is_file_only() {
+        let ts = "2026-10-22 11:59:31";
+        assert_eq!(render_console(DETAIL, ts, "RunId: x"), None);
+        assert_eq!(render_console("INFO", ts, "hi").unwrap(), "11:59:31  hi\n");
+        assert_eq!(
+            render_console("WARN", ts, "careful").unwrap(),
+            "11:59:31  WARNING: careful\n"
+        );
+        assert_eq!(render_console(STEP, ts, "Result").unwrap(), "\n== Result ==\n");
+    }
+
+    #[test]
+    fn log_messages_stay_single_line() {
+        assert_eq!(one_line("a\r\nb\nc"), "a | b | c");
+    }
+
+    #[test]
+    fn action_lines_read_as_sentences() {
+        assert_eq!(
+            action_line("DeletePath", "INFO", "Telemetry", "C:\\x.dll", "Deleted file"),
+            "Deleted [Telemetry]: C:\\x.dll"
+        );
+        assert_eq!(
+            action_line("DeletePath", "INFO", "Installer2Cache", "C:\\I2", "Removed entries=168"),
+            "Deleted [Installer2Cache]: C:\\I2 (folder, 168 entries)"
+        );
+        assert_eq!(
+            action_line("DeletePath", "DRYRUN", "Telemetry", "C:\\d", "directory"),
+            "Would delete [Telemetry]: C:\\d (folder)"
+        );
+        assert_eq!(
+            action_line("ScheduleDelete", "INFO", "RebootDelete", "C:\\f", "Pending delete at reboot"),
+            "Queued for deletion at restart: C:\\f"
+        );
+        assert_eq!(
+            action_line("Service", "SKIP", "FrameView", "Svc (Svc)", "component deselected"),
+            "Left service unchanged [FrameView]: Svc (Svc) (component off)"
+        );
+        assert_eq!(
+            action_line("StopService", "INFO", "Telemetry", "S", "Not running"),
+            "Service was not running [Telemetry]: S"
+        );
+        // Unknown kinds keep the raw form rather than inventing wording.
+        assert_eq!(
+            action_line("Custom", "INFO", "C", "p", "d"),
+            "Custom [C] p :: d"
+        );
+    }
 
     struct TempDir(PathBuf);
     impl TempDir {

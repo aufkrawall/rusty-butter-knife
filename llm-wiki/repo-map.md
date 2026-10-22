@@ -74,7 +74,8 @@ Last cross-checked: 2026-10-22 (lockinfo/ffi_filelocks added)
   deletions already registered by Windows.
 - `report.rs` — cleanup orchestration after privilege setup, post-run existence
   verification and JSON report block.
-- `logging.rs` — unified append/log action model and process-spanning mutex for
+- `logging.rs` — human console rendering (`render_console`, `action_line`,
+  file-only `DETAIL` and `STEP` heading levels), unified append/log action model and process-spanning mutex for
   large report blocks.
 
 ### Privilege/process/Task Scheduler

@@ -5,7 +5,7 @@ Last cross-checked: 2026-10-22 (log-driven deletion/reporting fixes — see log/
 ## Summary
 
 - Native Windows NVIDIA driver post-install debloater. Pure Rust crate at
-  repo root (`src/`, 80 unit/integration tests, unsafe confined to the
+  repo root (`src/`, 88 unit/integration tests, unsafe confined to the
   `ffi*` module family). C++ legacy version is gone.
   `python build.py` or `cargo build --release` builds `RustyButterKnife.exe`
   with explicit target triples, PE-machine verification and compiler path

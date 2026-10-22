@@ -262,11 +262,17 @@ to **one single log file** next to the executable:
   append to this same file (`--log-file PATH` overrides the location;
   `--log-dir PATH` changes the base directory).
 
-The log also records one summary line per service/task/locker-process stage
-(so "nothing matched" is visible), whether Windows still holds reboot-pending
-deletions under NVIDIA paths from an earlier run, and — only when this run
-actually queued reboot-time deletions — a closing `Reboot required to finish
-this run` notice.
+The console shows a short, plain-language account of the run: a header (mode,
+identity, what will be cleaned/kept), sections for services/processes/tasks,
+the search and the removals, and a closing **Result** section that says what
+happened and whether a restart is needed. Warnings are marked `WARNING:`.
+
+The log file contains the same lines with full timestamps and levels, plus
+file-only `[DETAIL]` lines (run header, search roots, container PIDs, full
+module paths, each entry queued for deletion at restart) and the
+machine-readable blocks (candidate table, post-run existence check, JSON
+report). When the privileged worker runs, the elevated window streams the
+worker's lines from the log in the same human form.
 
 No status JSON, CSV or separate report files are created by default. Supplying
 `--status-file PATH` explicitly adds the final machine-readable status JSON;

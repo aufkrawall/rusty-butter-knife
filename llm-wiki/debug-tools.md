@@ -43,29 +43,39 @@ Primary sources:
 
 ### Reading a run log
 
-Sections in order: progress/log lines → `==== Candidates ==== ` table →
-per-action records → post-run existence check (paths remaining, with reason:
-dry-run / pending reboot deletion / failure) → final JSON report block.
-`tally_previous_logs()` additionally embeds a history summary from prior logs
-in the same directory.
+Line format: `[YYYY-MM-DD HH:MM:SS] [LEVEL] message`, always single-line.
+Levels: `INFO`/`WARN`/`ERROR`/`FATAL`/`DRYRUN`/`SKIP`, `STEP` (section
+heading) and `DETAIL` (file-only: never printed, never streamed). The console
+renders records as `HH:MM:SS  message` (`WARNING:`/`ERROR:` prefixes,
+`== heading ==` for STEP) via `logging::render_console`; the TI parent streams
+worker lines through the same renderer and skips untimestamped block lines.
+
+Sections in order: header (`[DETAIL]` run-header marker, RunId, identity,
+components; then the human `[STEP]` header) → "Services, processes and
+scheduled tasks" → "Looking for NVIDIA bloat" → `==== Candidates ====` table
+→ "Removing" / "What would be removed" → post-run existence check block →
+JSON report block → "Result" section → `Full log:` line.
+Cross-version markers parsed by `tally_previous_logs()` stay verbatim
+(`run header ====`, `Candidate count: N`), now on DETAIL lines.
 
 Signals worth knowing (2026-10-22):
-- `Services:` / `Scheduled tasks:` / `Locker processes:` lines prove each stage
-  ran even when nothing matched (absent = stage skipped by options).
-- `Reboot-pending deletions:` reads `PendingFileRenameOperations(2)`; NVIDIA
-  entries there mean an earlier run still waits for a reboot. A later
-  `N of M candidate path(s) are already queued` line ties them to candidates.
-- Loaded container modules are classified: "selection removes" vs "selection
-  keeps (component off)". Only modules actually queued say "scheduled for
-  deletion at the next reboot" in the post-delete phase.
-- A `DeletePath` INFO with "In use by NVIDIA container ... deferred to reboot"
-  is the expected loaded-DLL/open-log case. A WARN `Delete failed` lists each
-  `Entry not removed:` with its Restart Manager holders — the first place to
-  look for an unexpected locker (installer still running, AV scan, ...).
-- `Reboot required to finish this run` appears only when MoveFileExW queued
-  something in this run.
-- The 2–25 s gap before `Elevated instance finished` in wizard runs is the
-  elevated console's `--pause` "Press Enter" prompt, not a hang.
+- `Services:` / `Processes:` / `Scheduled tasks:` lines prove each stage ran
+  and explain every NVIDIA entry (kept container, component off, not
+  recognized, to change).
+- `Waiting for a restart:` reads `PendingFileRenameOperations(2)` (raw counts
+  on a DETAIL line); NVIDIA entries mean an earlier run still waits for a
+  restart. `N of the M item(s) found are already queued` ties them to items.
+- Loaded container modules: "can only be deleted after a restart" (targeted)
+  vs "kept (its component is off)"; full paths are DETAIL lines.
+- `In use - will be deleted at the next restart [...]` (INFO) is the expected
+  loaded-DLL/open-log case. `Could not delete` / `Could not fully delete`
+  (WARN) lists each `- not removed:` entry with its Restart Manager holders —
+  the first place to look for an unexpected locker (installer, AV scan, ...).
+  Individual `Queued for deletion at restart` entries are DETAIL lines.
+- The Result section asks for a restart only when MoveFileExW queued
+  something in this run, and counts the run's WARN/ERROR lines.
+- The 2–25 s gap before the launcher's `The elevated window finished` line
+  in wizard runs is the elevated console's `--pause` prompt, not a hang.
 
 ## Tool path resolution
 

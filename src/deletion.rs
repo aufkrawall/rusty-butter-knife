@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use crate::app;
 use crate::lockinfo::FailedEntry;
-use crate::logging::{log_action, log_line};
+use crate::logging::{add_action, log_action, log_line};
 use crate::winfmt::format_win_error;
 
 /// Port of `takeOwnershipIfRequested` (takeown/icacls via absolute System32
@@ -164,12 +164,24 @@ fn schedule_delete_one(p: &Path) -> bool {
         );
         return false;
     }
-    log_action(
+    // Audit record + file line; the candidate's own line and the closing
+    // result already tell the user about the restart, so not on the console.
+    add_action(
         "ScheduleDelete",
         "INFO",
         "RebootDelete",
         &ps,
         "Pending delete at reboot",
+    );
+    log_line(
+        crate::logging::DETAIL,
+        &crate::logging::action_line(
+            "ScheduleDelete",
+            "INFO",
+            "RebootDelete",
+            &ps,
+            "Pending delete at reboot",
+        ),
     );
     let key = crate::util::to_lower(&ps);
     app::run_mut(|s| s.reboot_scheduled_paths.insert(key));
@@ -468,15 +480,22 @@ pub fn delete_candidate(index: usize) {
         &failures,
         schedule,
     );
-    log_action(
+    add_action(
         "DeletePath",
         report.level,
         &c.component_key,
         &path_str,
         &report.detail,
     );
+    log_line(
+        report.level,
+        &format!(
+            "{} [{}]: {path_str} ({})",
+            report.label, c.component_key, report.note
+        ),
+    );
     for line in &report.entry_lines {
-        log_line(report.level, line);
+        log_line(report.entry_level, line);
     }
 
     if schedule {

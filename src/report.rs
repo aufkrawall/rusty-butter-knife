@@ -9,7 +9,7 @@ use crate::actions::{
 use crate::app;
 use crate::components::build_components;
 use crate::discovery::{discover_candidates, tally_previous_logs, write_candidates_to_log};
-use crate::logging::{append_block_serialized, log_line};
+use crate::logging::{append_block_serialized, log_line, DETAIL, STEP};
 use crate::sysinfo::{current_token_account, is_admin, is_trusted_installer};
 use crate::util::json_escape;
 
@@ -167,7 +167,7 @@ pub fn write_report() {
         .collect::<Vec<_>>()
         .join(", ");
     log_line(
-        "INFO",
+        DETAIL,
         &format!("Action summary by status: {status_summary}"),
     );
 }
@@ -283,14 +283,16 @@ pub fn verify_candidate_removal() {
     let log_path = app::run(|s| s.log_path.clone());
     append_block_serialized(&log_path, &ss);
 
+    // The human verdict is the closing "Result" section; this stays in the
+    // file for tools and diffing against older logs.
     if candidates.is_empty() {
         log_line(
-            "INFO",
+            DETAIL,
             "Post-run check: no NVIDIA bloat candidates discovered; nothing to verify (0 paths remain).",
         );
     } else {
         log_line(
-            if remaining == 0 { "INFO" } else { "WARN" },
+            DETAIL,
             &format!(
                 "Post-run check: {}/{} candidate paths removed{}",
                 candidates.len() - remaining,
@@ -348,17 +350,21 @@ pub fn run_cleanup() -> Result<(), String> {
     let log_path = app::run(|s| s.log_path.to_string_lossy().into_owned());
     let opts = app::opts(|o| o.clone());
 
-    log_line("INFO", "==== NVIDIA post-install debloat run header ====");
-    log_line("INFO", &format!("RunId: {run_id}"));
-    log_line("INFO", &format!("Exe: {exe_path}"));
-    log_line("INFO", &format!("Log: {log_path}"));
-    log_line("INFO", &format!("Identity: {}", current_token_account()));
+    // Machine-oriented header: file only. The marker line below is a
+    // cross-version contract (tally_previous_logs counts runs by it).
+    let identity = current_token_account();
+    let admin = is_admin();
+    log_line(DETAIL, "==== NVIDIA post-install debloat run header ====");
+    log_line(DETAIL, &format!("RunId: {run_id}"));
+    log_line(DETAIL, &format!("Exe: {exe_path}"));
+    log_line(DETAIL, &format!("Log: {log_path}"));
+    log_line(DETAIL, &format!("Identity: {identity}"));
     log_line(
-        "INFO",
-        &format!("IsAdmin: {}", if is_admin() { "True" } else { "False" }),
+        DETAIL,
+        &format!("IsAdmin: {}", if admin { "True" } else { "False" }),
     );
     log_line(
-        "INFO",
+        DETAIL,
         &format!(
             "IsTrustedInstaller: {}",
             if is_trusted_installer() {
@@ -369,26 +375,14 @@ pub fn run_cleanup() -> Result<(), String> {
         ),
     );
     log_line(
-        "INFO",
+        DETAIL,
         &format!(
             "Execution mode: {}",
             if opts.execute { "EXECUTE" } else { "DRY RUN" }
         ),
     );
-    if !opts.execute {
-        log_line(
-            "INFO",
-            "Dry run does not request TrustedInstaller; it only scans and logs as the current user/admin.",
-        );
-    }
-    if opts.execute && !opts.ti_child && !opts.allow_admin_fallback && !is_trusted_installer() {
-        log_line(
-            "INFO",
-            "Execute mode will attempt TrustedInstaller scheduled-task relaunch before destructive actions.",
-        );
-    }
     log_line(
-        "INFO",
+        DETAIL,
         &format!(
             "Preserve NVIDIA Container processes/services: {}",
             if opts.preserve_nv_containers {
@@ -398,16 +392,31 @@ pub fn run_cleanup() -> Result<(), String> {
             }
         ),
     );
-
-    let comp_summary = build_components()
+    let enabled_snapshot = app::enabled_snapshot();
+    let comp_state: Vec<(&str, bool)> = build_components()
         .iter()
-        .map(|c| {
-            let on = app::enabled(|m| m.get(&c.key).copied().unwrap_or(false));
-            format!("{}={}", c.key, if on { "on" } else { "off" })
-        })
+        .map(|c| (c.key.as_str(), enabled_snapshot.get(&c.key).copied().unwrap_or(false)))
+        .collect();
+    let comp_summary = comp_state
+        .iter()
+        .map(|(k, on)| format!("{k}={}", if *on { "on" } else { "off" }))
         .collect::<Vec<_>>()
         .join(", ");
-    log_line("INFO", &format!("Components: {comp_summary}"));
+    log_line(DETAIL, &format!("Components: {comp_summary}"));
+
+    // Human header.
+    log_line(
+        STEP,
+        &format!(
+            "Rusty Butter Knife {} - {}",
+            app::RBK_VERSION,
+            if opts.execute {
+                "EXECUTE: changes will be made"
+            } else {
+                "DRY RUN: nothing will be changed"
+            }
+        ),
+    );
 
     if opts.execute && !opts.ti_child && !is_trusted_installer() && !opts.allow_admin_fallback {
         return Err(
@@ -416,18 +425,39 @@ pub fn run_cleanup() -> Result<(), String> {
         );
     }
     if opts.ti_child && !is_trusted_installer() {
-        let (level, msg) = worker_identity_message(
-            crate::sysinfo::is_local_system(),
-            &current_token_account(),
-        );
+        let (level, msg) =
+            worker_identity_message(crate::sysinfo::is_local_system(), &identity);
         log_line(level, &msg);
+    } else {
+        log_line(
+            "INFO",
+            &format!(
+                "Running as {identity} ({}).",
+                if admin {
+                    "administrator"
+                } else {
+                    "no administrator rights"
+                }
+            ),
+        );
+    }
+    let (clean, keep): (Vec<&str>, Vec<&str>) = {
+        let clean = comp_state.iter().filter(|(_, on)| *on).map(|(k, _)| *k).collect();
+        let keep = comp_state.iter().filter(|(_, on)| !*on).map(|(k, _)| *k).collect();
+        (clean, keep)
+    };
+    log_line("INFO", &format!("Will clean: {}", list_or_none(&clean)));
+    log_line("INFO", &format!("Will keep:  {}", list_or_none(&keep)));
+    if opts.preserve_nv_containers {
+        log_line("INFO", "The NVIDIA Display Container is kept running.");
     }
 
-    let enabled_snapshot = app::enabled_snapshot();
-
+    log_line(STEP, "Services, processes and scheduled tasks");
     handle_services(&enabled_snapshot);
     kill_locker_processes(&enabled_snapshot);
     handle_scheduled_tasks(&enabled_snapshot);
+
+    log_line(STEP, "Looking for NVIDIA bloat");
     tally_previous_logs();
     crate::lockinfo::note_pending_reboot_deletions();
     inspect_nv_container_modules(false, &enabled_snapshot);
@@ -436,6 +466,16 @@ pub fn run_cleanup() -> Result<(), String> {
     crate::lockinfo::note_candidates_already_pending();
 
     let candidate_count = app::run(|s| s.candidates.len());
+    if candidate_count > 0 {
+        log_line(
+            STEP,
+            if opts.execute {
+                "Removing"
+            } else {
+                "What would be removed"
+            },
+        );
+    }
     for index in 0..candidate_count {
         if app::ABORT_REQUESTED.load(std::sync::atomic::Ordering::SeqCst) {
             app::run_mut(|s| s.aborted = true);
@@ -444,41 +484,134 @@ pub fn run_cleanup() -> Result<(), String> {
         crate::deletion::delete_candidate(index);
     }
 
-    inspect_nv_container_modules(true, &enabled_snapshot);
+    // Re-inspection only explains deletions that were actually attempted.
+    if opts.execute && candidate_count > 0 {
+        inspect_nv_container_modules(true, &enabled_snapshot);
+    }
     verify_candidate_removal();
     if app::run(|s| s.aborted) {
         log_line(
-            "WARN",
+            DETAIL,
             "Run aborted by user request; partial results recorded.",
         );
     }
     write_report();
-    log_line("INFO", &format!("Done. Log: {log_path}"));
-    if !opts.execute {
-        log_line(
-            "WARN",
-            "Dry run only. Re-run with --execute to make changes.",
-        );
+
+    let facts = app::run(|s| ResultFacts {
+        execute: opts.execute,
+        aborted: s.aborted,
+        found: s.candidates.len(),
+        remaining: s.paths_remaining_after_run.max(0) as usize,
+        pending_reboot: s.paths_pending_reboot.max(0) as usize,
+        reboot_entries: s.reboot_scheduled_paths.len(),
+        problems: crate::logging::problems_logged(),
+    });
+    log_line(STEP, "Result");
+    for (level, line) in result_lines(&facts) {
+        log_line(level, &line);
     }
-    let (scheduled_entries, pending_candidates) =
-        app::run(|s| (s.reboot_scheduled_paths.len(), s.paths_pending_reboot));
-    if let Some(msg) = reboot_notice(scheduled_entries, pending_candidates) {
-        log_line("WARN", &msg);
-    }
+    log_line("INFO", &format!("Full log: {log_path}"));
     Ok(())
 }
 
-/// Closing reboot notice, only when this run verifiably queued reboot-time
-/// deletions (MoveFileExW succeeded). Nothing queued => no notice.
-pub fn reboot_notice(scheduled_entries: usize, pending_candidates: i64) -> Option<String> {
-    if scheduled_entries == 0 {
-        return None;
+fn list_or_none(items: &[&str]) -> String {
+    if items.is_empty() {
+        "(none)".to_string()
+    } else {
+        items.join(", ")
     }
-    Some(format!(
-        "Reboot required to finish this run: {pending_candidates} candidate path(s) \
-         ({scheduled_entries} file-system entr{}) are queued for deletion at the next reboot.",
-        if scheduled_entries == 1 { "y" } else { "ies" }
-    ))
+}
+
+/// Inputs of the closing plain-language summary.
+pub struct ResultFacts {
+    pub execute: bool,
+    pub aborted: bool,
+    /// Candidate paths found.
+    pub found: usize,
+    /// Candidate paths still on disk after the run.
+    pub remaining: usize,
+    /// Of `remaining`: verifiably queued for deletion at the next restart.
+    pub pending_reboot: usize,
+    /// File-system entries this run queued for deletion at restart.
+    pub reboot_entries: usize,
+    /// WARN/ERROR/FATAL lines this process logged before the summary.
+    pub problems: usize,
+}
+
+/// Pure core of the closing "Result" section: what happened and what the
+/// user has to do, in plain words.
+pub fn result_lines(f: &ResultFacts) -> Vec<(&'static str, String)> {
+    let mut out: Vec<(&'static str, String)> = Vec::new();
+    if f.aborted {
+        out.push((
+            "WARN",
+            "Stopped early (Ctrl+C); only part of the work was done.".to_string(),
+        ));
+    }
+    let plural = |n: usize| if n == 1 { "item" } else { "items" };
+    if f.found == 0 {
+        out.push((
+            "INFO",
+            "Nothing to remove - the selected components are already clean.".to_string(),
+        ));
+    } else if !f.execute {
+        out.push((
+            "INFO",
+            format!(
+                "Dry run: {} {} would be removed. Nothing was changed; run with --execute to remove {}.",
+                f.found,
+                plural(f.found),
+                if f.found == 1 { "it" } else { "them" }
+            ),
+        ));
+    } else {
+        let removed = f.found.saturating_sub(f.remaining);
+        let failed = f.remaining.saturating_sub(f.pending_reboot);
+        out.push((
+            "INFO",
+            if f.remaining == 0 {
+                format!("Removed all {} {} found.", f.found, plural(f.found))
+            } else {
+                format!("Removed {removed} of {} {} now.", f.found, plural(f.found))
+            },
+        ));
+        if f.pending_reboot > 0 {
+            out.push((
+                "WARN",
+                format!(
+                    "{} {} {} still in use and will be deleted when Windows restarts. Please restart to finish.",
+                    f.pending_reboot,
+                    plural(f.pending_reboot),
+                    if f.pending_reboot == 1 { "is" } else { "are" }
+                ),
+            ));
+        } else if f.reboot_entries > 0 {
+            out.push((
+                "WARN",
+                "Some leftover parts are queued for deletion when Windows restarts. Please restart to finish."
+                    .to_string(),
+            ));
+        }
+        if failed > 0 {
+            out.push((
+                "WARN",
+                format!(
+                    "{failed} {} could not be removed - see the WARNING lines above.",
+                    plural(failed)
+                ),
+            ));
+        }
+    }
+    if f.problems > 0 {
+        out.push((
+            "INFO",
+            format!(
+                "{} warning(s) were reported during this run (marked WARNING above).",
+                f.problems
+            ),
+        ));
+    }
+    out
 }
 
 /// Identity line of the scheduled-task worker. Task Scheduler does not grant
@@ -490,7 +623,7 @@ pub fn worker_identity_message(is_local_system: bool, account: &str) -> (&'stati
         (
             "INFO",
             format!(
-                "Worker identity: {account} (LocalSystem). Task Scheduler runs the requested TrustedInstaller task as SYSTEM; SYSTEM privileges cover the targeted file operations."
+                "Running as {account} in the privileged worker (Windows grants SYSTEM instead of the requested TrustedInstaller; that is enough)."
             ),
         )
     } else {
@@ -547,13 +680,60 @@ mod tests {
         );
     }
 
+    fn facts(execute: bool, found: usize, remaining: usize, pending: usize) -> ResultFacts {
+        ResultFacts {
+            execute,
+            aborted: false,
+            found,
+            remaining,
+            pending_reboot: pending,
+            reboot_entries: pending,
+            problems: 0,
+        }
+    }
+
+    fn texts(lines: &[(&'static str, String)]) -> String {
+        lines
+            .iter()
+            .map(|(l, t)| format!("{l}:{t}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     #[test]
-    fn reboot_notice_only_when_something_was_queued() {
-        // Regression: the notice fired on a 0-candidate run.
-        assert_eq!(reboot_notice(0, 0), None);
-        let msg = reboot_notice(7, 6).unwrap();
-        assert!(msg.contains("6 candidate path(s)") && msg.contains("7 file-system entries"));
-        assert!(reboot_notice(1, 1).unwrap().contains("1 file-system entry)"));
+    fn result_for_clean_system_has_no_restart_or_warning() {
+        // Regression: the 0-candidate run ended with a reboot warning.
+        let lines = result_lines(&facts(true, 0, 0, 0));
+        assert_eq!(lines.len(), 1, "{}", texts(&lines));
+        assert!(lines[0].1.contains("already clean"));
+        assert!(!texts(&lines).contains("restart"));
+    }
+
+    #[test]
+    fn result_asks_for_restart_only_when_items_are_queued() {
+        // The 2026-10-22 case: 8 found, 6 in use and queued.
+        let lines = result_lines(&facts(true, 8, 6, 6));
+        let all = texts(&lines);
+        assert!(all.contains("INFO:Removed 2 of 8 items now."), "{all}");
+        assert!(all.contains("WARN:6 items are still in use"), "{all}");
+        assert!(!all.contains("could not be removed"), "{all}");
+        let done = texts(&result_lines(&facts(true, 7, 0, 0)));
+        assert!(done.contains("Removed all 7 items found."), "{done}");
+        assert!(!done.contains("restart"), "{done}");
+    }
+
+    #[test]
+    fn result_reports_failures_dry_runs_and_aborts() {
+        let failed = texts(&result_lines(&facts(true, 3, 2, 1)));
+        assert!(failed.contains("1 item could not be removed"), "{failed}");
+        let dry = texts(&result_lines(&facts(false, 3, 3, 0)));
+        assert!(dry.contains("Dry run: 3 items would be removed"), "{dry}");
+        let mut aborted = facts(true, 3, 1, 0);
+        aborted.aborted = true;
+        aborted.problems = 2;
+        let all = texts(&result_lines(&aborted));
+        assert!(all.starts_with("WARN:Stopped early"), "{all}");
+        assert!(all.contains("2 warning(s)"), "{all}");
     }
 
     #[test]
