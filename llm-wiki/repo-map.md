@@ -9,7 +9,9 @@ Last cross-checked: 2026-10-22 (lockinfo/ffi_filelocks added)
 - `build.py` — Windows release-build entry point. Always passes an explicit
   MSVC target triple, applies compiler path remapping, PE-verifies the requested
   architecture, and copies only verified artifacts to
-  `dist/<arch>/RustyButterKnife.exe`.
+  `dist/<arch>/RustyButterKnife.exe`. Per `AGENTS.md`, every agent task ends
+  with `python build.py --arch x86_64` after the commit, so
+  `dist/x86_64/RustyButterKnife.exe` always matches `HEAD` (dist/ is gitignored).
 - `.cargo/config.toml` — target-specific Rust/link settings.
 - `.github/workflows/windows-ci-release.yml` — Windows-native gate on pushes
   and pull requests: build, clippy `-D warnings`, all targets/tests, safe CLI

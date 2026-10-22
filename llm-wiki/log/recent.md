@@ -1,3 +1,10 @@
+## 2026-10-22 — Agent tasks end with a fresh dist binary
+
+User request: after an agent finishes, `dist/` must always hold a new binary.
+`AGENTS.md` now makes `python build.py --arch x86_64` the last step of every
+task (after gate + commit), so `dist/x86_64/RustyButterKnife.exe` matches
+`HEAD`; a failed build must be reported, not hidden.
+
 ## 2026-10-22 — Log-driven fixes: best-effort deletion, lock diagnostics, honest reporting
 
 Reviewed four real v2.2.0 execute-run logs (2026-09-23 … 2026-10-22, drivers

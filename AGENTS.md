@@ -22,6 +22,12 @@ Copyright (c) 2026 aufkrawall
   4. when behavior/CLI changed, one safe smoke such as
      `./target/debug/RustyButterKnife.exe --list-components`, `--version`, or
      `--help`; use `--dry-run` only when candidate/report behavior needs review.
+- **Always finish with a fresh binary in `dist/`.** Before ending any task that
+  touched the tree (code, docs or config), run `python build.py --arch x86_64`
+  as the very last step, after the gate and the commit, so
+  `dist/x86_64/RustyButterKnife.exe` always matches the committed `HEAD`.
+  Report the path and the build result; if the build fails, say so and leave
+  the failure visible instead of reporting the task as done.
 - `.github/workflows/windows-ci-release.yml` mirrors this gate on Windows for
   pushes and pull requests. CI does **not** replace sacrificial-VM execute-mode
   testing, sanitizers, or fuzzing; those remain coverage gaps.
