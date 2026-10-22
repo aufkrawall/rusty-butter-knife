@@ -19,4 +19,9 @@ Cargo.lock.bak
 # Python
 __pycache__/
 *.pyc
-llm-wiki/debug-tools-security-audit.md
+# Machine-specific notes and tool discovery output (never committed)
+llm-wiki/*.local.md
+tool-paths.env
+debug-tool-manifest.json
+debug-tool-warnings.txt
+debug-tool-availability.md

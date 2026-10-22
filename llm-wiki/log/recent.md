@@ -1,3 +1,27 @@
+## 2026-10-22 — llm-prompt-templates default integration
+
+Integrated the default bundle of `aufkrawall/llm-prompt-templates` (commit
+`338ae94`) per its `INSTALL.md` merge-and-adapt contract:
+
+- Created `CHANGELOG.md` (Unreleased entries for the post-v2.2.0 work),
+  `llm-wiki/changelog-guidelines.md` (+ project section: `[release]` flow uses
+  `--generate-notes`, no changelog extraction in CI),
+  `llm-wiki/secret-leak-prevention.md` (+ gitleaks/trufflehog commands and the
+  project's sensitive artifacts), tracked `llm-wiki/debug-tools-security-audit.md`
+  (+ RBK privileged-boundary anchors), `tools/discover-debug-tools.ps1`
+  (verbatim, parse-checked, not run) and `tool-paths.example.env`.
+- Merged baseline rules into `AGENTS.md` (secret-leak gate, changelog, commit
+  discipline, verify-the-change, diagnostics economy, test-app lifecycle,
+  debug-tool discovery precedence) without dropping project rules; the
+  project rule "always commit" wins over the template's "commit only when
+  required".
+- The previous untracked machine dump (absolute tool paths plus another
+  project's anchors) was kept locally as gitignored
+  `llm-wiki/debug-tools-security-audit.local.md`; `.gitignore` now covers
+  `*.local.md`, `tool-paths.env` and discovery output.
+- Not installed (opt-in only): general audit template, security-audit
+  bundle/installers; no CI changes.
+
 ## 2026-10-22 — Human-friendly console and log reporting
 
 After a clean test run (0 WARN lines), the remaining feedback was about

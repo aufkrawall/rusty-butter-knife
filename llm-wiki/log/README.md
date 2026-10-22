@@ -14,7 +14,7 @@ archive once it grows past that ceiling.
 
 | File | Lines | Covers |
 |---|---:|---|
-| `recent.md` | 118 | 2026-09-11 – current |
+| `recent.md` | 142 | 2026-09-11 – current |
 | `archive-2026-W36.md` | 166 | 2026-09-04 – 2026-09-06 |
 | `archive-2026-W35.md` | 119 | 2026-08-26 – 2026-08-27 |
 | `archive-2026-W34.md` | 158 | 2026-08-23 |

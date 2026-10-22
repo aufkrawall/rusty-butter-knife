@@ -1,7 +1,7 @@
 # llm-wiki Index
 
-Last cross-checked: 2026-09-06 (full-repo audit pass; codestyle/debug-tools
-rewritten for the Rust-only tree, log rotated — see log/recent.md)
+Last cross-checked: 2026-10-22 (llm-prompt-templates default integration:
+changelog, secret-leak, security-audit inventory pages — see log/recent.md)
 
 Primary sources:
 - `AGENTS.md`
@@ -47,15 +47,28 @@ the concrete implementation.
   - Compact current-state summary and token-efficient routing into the
     longer wiki pages.
 - `repo-map.md`
-  - **Code map**: top-level layout, section-by-section map of the single
-    translation unit, build pipeline structure, and important paths.
+  - **Code map**: top-level layout, module-by-module map of the Rust crate,
+    build pipeline structure, and important paths.
 - `known-debt.md`
   - Deliberately accepted debt with its reasoning, so later audits don't
     re-derive it and later agents don't "fix" it without weighing the same
-    trade-off. Includes the arch-output-collision and no-test-suite items.
+    trade-off (test/VM coverage gaps, TI principal, status-file scope, ...).
 - `debug-tools.md`
-  - Safe verification commands, run-log anatomy, and diagnostic workflows.
-    Last verified 2026-09-06.
+  - Safe verification commands, run-log anatomy (console vs file-only
+    `DETAIL` lines), diagnostic workflows, and agent-side debugger tool
+    resolution via `tools/discover-debug-tools.ps1`. Last verified 2026-10-22.
+- `debug-tools-security-audit.md`
+  - Security-oriented debug/binary tool inventory (PE hardening, strings and
+    secrets, signing, runtime mitigation, tracing, evidence capture) plus this
+    project's privileged-boundary anchors. Template baseline from
+    `aufkrawall/llm-prompt-templates`; the full audit bundle is not installed.
+    Machine-specific old notes: untracked `debug-tools-security-audit.local.md`.
+- `changelog-guidelines.md`
+  - How to maintain root `CHANGELOG.md` and how it relates to the
+    `[release]` workflow (GitHub-generated release notes).
+- `secret-leak-prevention.md`
+  - Mandatory pre-/post-commit secret checks with the project's scanner
+    commands (gitleaks/trufflehog) and sensitive-artifact list.
 - `rust-port-feasibility.md`
   - Full API-surface inventory vs Rust coverage, verdict, and the managed
     risks of a potential port. Last verified 2026-08-23.

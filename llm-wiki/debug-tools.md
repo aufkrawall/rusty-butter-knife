@@ -84,3 +84,38 @@ Signals worth knowing (2026-10-22):
   `~/.cargo/bin` and always passes the explicit MSVC target triple.
 - No other external tool paths are involved; do not introduce PATH-based
   resolution of system executables in elevated contexts.
+
+## Generic debugger / binary-analysis tools (agent side)
+
+Baseline from `aufkrawall/llm-prompt-templates` (default integration,
+2026-10-22). These are tools an agent may use to inspect artifacts; they are
+unrelated to how the product itself resolves `System32` tools.
+
+- Verify a tool exists and runs before relying on it; treat documented paths
+  as hints. Never mutate binaries, symbols, global debugger flags, registry or
+  system settings unless explicitly requested.
+- Treat dumps, logs (including `debloat-*.log`), captures and extracted
+  strings as potentially sensitive.
+- Resolution order, first reliable source wins:
+  1. `debug-tool-manifest.json` written by `tools/discover-debug-tools.ps1`
+     (non-mutating; default output `%LOCALAPPDATA%\LLMDebugTools\`, run e.g.
+     `pwsh -File tools/discover-debug-tools.ps1 -ProjectRoot .`);
+  2. local, uncommitted `tool-paths.env` (template: root
+     `tool-paths.example.env`);
+  3. repository-local/pinned tools (none today besides the Rust toolchain);
+  4. `Get-Command` / `where.exe`;
+  5. documented known-good paths; 6. safe defaults.
+- Typical Windows tools when installed: `cdb`/`windbg`/`WinDbgX`,
+  `dumpchk`, `symchk`, `dbh`, `dumpbin` (`link /dump`), `undname`,
+  `llvm-objdump`, `llvm-strings`/`strings`, Sysinternals `procdump`,
+  `procmon`, `procexp`, `handle`, `listdlls`, `vmmap`, `sigcheck`.
+- Crash dumps: combine `srv*` with the local symbol directory
+  (`cdb -z <dump> -y "srv*;<symbol dir>" -c ".ecxr; k; q"`); Rust PDBs are
+  emitted under `target/`.
+- Security-oriented inventory (PE hardening, strings/secrets, signing,
+  runtime mitigation, tracing, evidence capture) and this project's
+  privileged-boundary anchors: `llm-wiki/debug-tools-security-audit.md`.
+- Windows-only project: the template's Linux/macOS tool tables are not
+  carried here (see the security-audit page for cross-platform coverage).
+- Never generate or commit `debug-tool-manifest.json`, `tool-paths.env` or
+  other machine-specific paths (gitignored).

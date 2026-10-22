@@ -46,9 +46,33 @@ Copyright (c) 2026 aufkrawall
   contains `[release]`; do not use that marker until the same tree has passed
   the Windows gate.
 - Always commit code changes. Do not push unless explicitly requested.
+- Commits: concise title plus a short bullet-point body for non-trivial changes
+  (what changed and why). Split non-trivial tasks into small, self-contained
+  commits; each must hold together, pass the gate and pass the secret-leak
+  checks below.
+- Maintain root `CHANGELOG.md` per `llm-wiki/changelog-guidelines.md`: record
+  changelog-worthy, task-owned changes under `## Unreleased` before committing.
+- Verify the change itself, not just exit codes: prefer a check that fails
+  without the change, otherwise inspect the artifact/output directly; state
+  what was not verified.
+- Keep large logs, generated output and dumps out of working context; inspect
+  targeted ranges or summaries.
 - Keep `llm-wiki/` current when durable project knowledge changes.
 - Mistrust source comments, docs and wiki equally; verify claims against the
   current code and observed tests/builds.
+
+## Secret leak prevention (commit gate)
+
+Full procedure and project commands: `llm-wiki/secret-leak-prevention.md`.
+
+- Before every commit: review `git status`, the staged patch and the planned
+  message; run the available scanner (`gitleaks git --staged ...`).
+- After every commit and before any push: inspect
+  `git show --format=fuller --stat --patch HEAD` and scan that commit.
+- No scanner available is never a reason to skip: do the manual fallback.
+- Any suspected leak blocks push. Never quote full secrets anywhere; rotate
+  real credentials per policy. Run logs (`debloat-*.log`), tool manifests and
+  `tool-paths.env` are machine-specific and must stay uncommitted.
 
 ## Engineering rules
 
@@ -85,6 +109,10 @@ Copyright (c) 2026 aufkrawall
 - When matching behavior changes, add negative tests for false positives as
   well as positive tests for intended NVIDIA targets. Dry-run candidate logs can
   supplement tests but must not substitute for decision-level regression tests.
+- For every bug fix or behavior correction, assess regression coverage and
+  diagnostics explicitly; prefer a focused test that fails before the fix. If
+  automation is impractical, keep a reproducible verification method and say
+  why the test was omitted.
 - `build.py` intentionally aborts on non-Windows hosts. It always passes the
   requested target triple explicitly and PE-verifies the result.
 
@@ -93,6 +121,12 @@ Copyright (c) 2026 aufkrawall
 - Add high-signal, rate-limited logging when it materially helps diagnose state
   transitions or failures. Route runtime records through `log_line` /
   `log_action` so launcher, elevated instance and SYSTEM worker share one log.
+- Keep diagnostics economical: single-line entries with stable wording, each
+  distinct event once, repeats summarized with counters, collections capped
+  (first items plus totals). The console is for humans (plain sentences,
+  `STEP` headings, closing Result); machine detail goes to file-only `DETAIL`
+  lines. Keep the cross-version log markers (`run header ====`,
+  `Candidate count: N`) and JSON report fields stable.
 - A destructive run must establish a writable audit log before mutation.
 - Cross-process Ctrl+C during UAC handoff uses a manual-reset named Windows
   event. The launcher remains attached until the elevated process actually
@@ -100,6 +134,20 @@ Copyright (c) 2026 aufkrawall
   work can continue.
 - External tools (`schtasks.exe`, `takeown.exe`, `icacls.exe`) must be resolved
   from the real `%SystemRoot%\System32`, never via PATH/CWD in privileged code.
+- Agent-side debugger/binary tools: use `tools/discover-debug-tools.ps1` and
+  its `debug-tool-manifest.json` as machine-specific path evidence before
+  `tool-paths.env`, PATH or documented paths (`llm-wiki/debug-tools.md`,
+  security inventory in `llm-wiki/debug-tools-security-audit.md`). Never
+  mutate global debugger flags, registry/system settings, binaries or
+  symbols unless explicitly requested.
+
+## Test apps and computer use
+
+- Prefer scripted CLI verification (`--dry-run`, `--list-components`,
+  `--version`, `--help`) over interactive use; never drive execute mode or
+  the UAC wizard under an agent harness.
+- Keep runs short and bounded with an explicit stop condition; shut down
+  everything started (including child processes) and confirm nothing lingers.
 
 ## Useful commands and paths
 
@@ -111,6 +159,8 @@ Copyright (c) 2026 aufkrawall
 | `debloat-*.log` | Unified run log; override with `--log-file` / `--log-dir` |
 | `python build.py --arch x86_64` | Verified release build into `dist/x86_64/` |
 | `python build.py --arch aarch64` | Verified ARM64 cross-build into `dist/aarch64/` |
+| `pwsh -File tools/discover-debug-tools.ps1 -ProjectRoot .` | Non-mutating debugger/binary-tool discovery; writes `debug-tool-manifest.json` to `%LOCALAPPDATA%\LLMDebugTools\` |
+| `CHANGELOG.md` | User-facing change log; `## Unreleased` updated with each change |
 
 ## `llm-wiki/` workflow
 
@@ -118,8 +168,11 @@ Copyright (c) 2026 aufkrawall
   of truth.
 - For substantial unfamiliar work, orient via `llm-wiki/index.md`, then
   `repo-map.md`, the relevant topical pages, and `log/recent.md` for chronology.
+- Skip broad wiki loading for trivial localized edits; read `log/archive-*`
+  only when historical context is needed.
 - Prefer updating existing pages over creating new ones. Put durable current
   rules in topical pages/current state; put chronology in `log/recent.md`.
+  Do not paste raw logs or long command output into durable pages.
 - Mark uncertainty explicitly. Do not preserve stale claims for historical
   sentiment when source code disproves them.
 - After code + wiki changes, check for contradictions, stale counts/workflows,

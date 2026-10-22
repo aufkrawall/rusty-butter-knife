@@ -18,7 +18,13 @@ Last cross-checked: 2026-10-22 (lockinfo/ffi_filelocks added)
   smoke. A `[release]` main push additionally builds and publishes the current
   package version as a GitHub release.
 - `README.md` — user-facing behavior/CLI/safety/logging contract.
-- `AGENTS.md` — development, safety and release rules.
+- `AGENTS.md` — development, safety, commit (secret-leak gate, changelog) and
+  release rules.
+- `CHANGELOG.md` — user-facing changes; `## Unreleased` until a release.
+- `tools/discover-debug-tools.ps1` — non-mutating agent-side debugger/binary
+  tool discovery (from `aufkrawall/llm-prompt-templates`); writes its manifest
+  outside the repo. `tool-paths.example.env` — template for the gitignored
+  local `tool-paths.env`.
 - `assets/` — README media only.
 - `llm-wiki/` — derived project memory and audit chronology.
 
