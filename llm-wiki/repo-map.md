@@ -1,6 +1,6 @@
 # Repo Map (code map)
 
-Last cross-checked: 2026-09-06 (v2.1.0 release prep)
+Last cross-checked: 2026-10-22 (lockinfo/ffi_filelocks added)
 
 ## Top-level
 
@@ -64,8 +64,12 @@ Last cross-checked: 2026-09-06 (v2.1.0 release prep)
   candidate dedup/collapse, previous-log history and candidate-list logging.
 - `fsutil.rs` — no-follow filesystem kind probes and postorder traversal.
   Reparse points are surfaces only and are never descended through.
-- `deletion.rs` — candidate deletion, ownership helpers, extended-length paths,
-  attribute clearing, DriverStore recursive-target guard and reboot scheduling.
+- `deletion.rs` — candidate deletion (best-effort per entry, two passes),
+  ownership helpers, extended-length paths, attribute clearing, DriverStore
+  recursive-target guard and reboot scheduling of leftovers only.
+- `lockinfo.rs` — read-only diagnostics for leftovers: lock holders, expected
+  NVIDIA-container locks (INFO vs WARN decision core) and reboot-pending
+  deletions already registered by Windows.
 - `report.rs` — cleanup orchestration after privilege setup, post-run existence
   verification and JSON report block.
 - `logging.rs` — unified append/log action model and process-spanning mutex for
@@ -84,9 +88,11 @@ Last cross-checked: 2026-09-06 (v2.1.0 release prep)
   bounded stop convergence.
 - `ffi_tasksched.rs` — Task Scheduler COM wrappers, recursive enumeration and
   TI task registration; COM variants use RAII cleanup.
-- `ffi.rs` — remaining general Win32 wrappers (console, mutexes, identity,
-  Toolhelp snapshots, UAC `ShellExecuteExW`, file primitives). `unsafe` is
-  confined to the `ffi*` family.
+- `ffi_filelocks.rs` — Restart Manager holder lookup (register + list only,
+  never shutdown/restart) and HKLM REG_MULTI_SZ reads.
+- `ffi.rs` — remaining general Win32 wrappers (console, mutexes, identity incl.
+  SID-based LocalSystem check, Toolhelp snapshots, UAC `ShellExecuteExW`, file
+  primitives). `unsafe` is confined to the `ffi*` family.
 
 ### Utilities
 

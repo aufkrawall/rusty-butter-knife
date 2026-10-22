@@ -1,6 +1,6 @@
 # Debug Tools
 
-Last cross-checked: 2026-09-06 (Rust-only tree)
+Last cross-checked: 2026-10-22 (log signals for locks/reboot queue)
 
 Primary sources:
 - `AGENTS.md`
@@ -48,6 +48,24 @@ per-action records → post-run existence check (paths remaining, with reason:
 dry-run / pending reboot deletion / failure) → final JSON report block.
 `tally_previous_logs()` additionally embeds a history summary from prior logs
 in the same directory.
+
+Signals worth knowing (2026-10-22):
+- `Services:` / `Scheduled tasks:` / `Locker processes:` lines prove each stage
+  ran even when nothing matched (absent = stage skipped by options).
+- `Reboot-pending deletions:` reads `PendingFileRenameOperations(2)`; NVIDIA
+  entries there mean an earlier run still waits for a reboot. A later
+  `N of M candidate path(s) are already queued` line ties them to candidates.
+- Loaded container modules are classified: "selection removes" vs "selection
+  keeps (component off)". Only modules actually queued say "scheduled for
+  deletion at the next reboot" in the post-delete phase.
+- A `DeletePath` INFO with "In use by NVIDIA container ... deferred to reboot"
+  is the expected loaded-DLL/open-log case. A WARN `Delete failed` lists each
+  `Entry not removed:` with its Restart Manager holders — the first place to
+  look for an unexpected locker (installer still running, AV scan, ...).
+- `Reboot required to finish this run` appears only when MoveFileExW queued
+  something in this run.
+- The 2–25 s gap before `Elevated instance finished` in wizard runs is the
+  elevated console's `--pause` "Press Enter" prompt, not a hang.
 
 ## Tool path resolution
 

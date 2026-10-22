@@ -124,8 +124,9 @@ RustyButterKnife.exe --execute --kill-lockers --disable-services --delete-schedu
 
 This will attempt a TrustedInstaller-level relaunch via the Task Scheduler COM
 API so that it can delete files a normal Administrator cannot touch. If the
-system does not grant TrustedInstaller (Windows limitation), the tool falls back
-to SYSTEM privileges, which are still sufficient for the vast majority of files.
+system does not grant TrustedInstaller (Windows limitation; in practice the task
+always runs as SYSTEM, which the log records as INFO), the tool uses SYSTEM
+privileges, which are sufficient for the targeted files.
 The parent waits for the SYSTEM worker task and reads its exit code via the Task
 Scheduler (`LastTaskResult`); failures propagate via exit codes 10 and 11.
 
@@ -232,6 +233,13 @@ Scheduler (`LastTaskResult`); failures propagate via exit codes 10 and 11.
 - Read-only files/directories get their attributes cleared and are retried once;
   deep paths fall back to extended-length (`\\?\`) forms before being scheduled
   for reboot-time deletion.
+- Directory deletion is best-effort per entry: one locked file no longer keeps
+  its unlocked siblings on disk. Only the entries that are genuinely in use are
+  scheduled for reboot-time deletion (with `--schedule-reboot-delete`), and the
+  log names each one together with the process holding it (read-only Restart
+  Manager lookup; nothing is stopped because of it). Locks held only by the
+  preserved NVIDIA container are expected and logged as INFO; anything else
+  stays a WARN.
 - Stale artifacts of crashed previous runs (`NvDebloatTI-*-status.json`,
   orphaned scheduled tasks) are swept automatically at relaunch time.
 - The elevated task is registered with a 2-hour execution time limit so a
@@ -253,6 +261,12 @@ to **one single log file** next to the executable:
   remaining = fully cleaned) and the final JSON report. All processes of a run
   append to this same file (`--log-file PATH` overrides the location;
   `--log-dir PATH` changes the base directory).
+
+The log also records one summary line per service/task/locker-process stage
+(so "nothing matched" is visible), whether Windows still holds reboot-pending
+deletions under NVIDIA paths from an earlier run, and — only when this run
+actually queued reboot-time deletions — a closing `Reboot required to finish
+this run` notice.
 
 No status JSON, CSV or separate report files are created by default. Supplying
 `--status-file PATH` explicitly adds the final machine-readable status JSON;

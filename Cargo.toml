@@ -28,6 +28,7 @@ windows-sys = { version = "0.60", features = [
     "Win32_Globalization",
     "Win32_System_IO",
     "Win32_System_Registry",
+    "Win32_System_RestartManager",
 ] }
 # Generated COM interface bindings (used only inside src/ffi_tasksched.rs).
 windows = { version = "0.62", features = [

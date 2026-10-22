@@ -198,7 +198,7 @@ pub fn attempt_trusted_installer_relaunch() -> TiRelaunchResult {
 
     log_line(
         "INFO",
-        "TrustedInstaller context required for destructive execution. Attempting automatic TI scheduled-task relaunch via COM API.",
+        "Destructive execution runs in a privileged worker started by a one-shot scheduled task (COM API). The task requests TrustedInstaller; Windows runs it as SYSTEM, which suffices.",
     );
 
     let task_name = format!("{}{}", app::K_TI_TASK_PREFIX, ffi_task_id());

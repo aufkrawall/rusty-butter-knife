@@ -66,6 +66,12 @@ pub fn is_trusted_installer() -> bool {
     acct == "nt service\\trustedinstaller" || acct == TRUSTED_INSTALLER_SID_LOWER
 }
 
+/// True when running as LocalSystem (the identity the scheduled-task worker
+/// actually receives). SID-based, so localized account names cannot defeat it.
+pub fn is_local_system() -> bool {
+    crate::ffi::current_token_is_local_system()
+}
+
 /// Port of `getExePath`.
 pub fn get_exe_path() -> PathBuf {
     crate::ffi::module_file_name()

@@ -12,8 +12,8 @@ use windows_sys::Win32::Foundation::{
 use windows_sys::Win32::Globalization::{GetOEMCP, MultiByteToWideChar};
 use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
 use windows_sys::Win32::Security::{
-    AllocateAndInitializeSid, CheckTokenMembership, FreeSid, GetTokenInformation,
-    LookupAccountSidW, TokenUser, PSID, SID_IDENTIFIER_AUTHORITY, TOKEN_QUERY,
+    AllocateAndInitializeSid, CheckTokenMembership, FreeSid, GetTokenInformation, IsWellKnownSid,
+    LookupAccountSidW, TokenUser, WinLocalSystemSid, PSID, SID_IDENTIFIER_AUTHORITY, TOKEN_QUERY,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     DeleteFileW, MoveFileExW, SetFileAttributesW, FILE_ATTRIBUTE_NORMAL,
@@ -345,8 +345,9 @@ pub fn is_admin() -> bool {
     is_member != 0
 }
 
-/// Port of `currentTokenAccount`: "DOMAIN\name" or SID string fallback.
-pub fn current_token_account() -> String {
+/// Run `f` with the process token's user SID. The SID pointer is valid only
+/// for the duration of the callback (it points into a local buffer).
+fn with_token_user_sid<R>(f: impl FnOnce(PSID) -> R) -> Option<R> {
     struct TokenHandle(HANDLE);
     impl Drop for TokenHandle {
         fn drop(&mut self) {
@@ -361,7 +362,7 @@ pub fn current_token_account() -> String {
     let token = unsafe {
         let mut h: HANDLE = std::ptr::null_mut();
         if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut h) == 0 {
-            return "<unknown>".to_string();
+            return None;
         }
         TokenHandle(h)
     };
@@ -371,7 +372,7 @@ pub fn current_token_account() -> String {
         GetTokenInformation(token.0, TokenUser, std::ptr::null_mut(), 0, &mut needed);
     }
     if needed == 0 {
-        return "<unknown>".to_string();
+        return None;
     }
     let mut buf = vec![0u8; needed as usize];
     let ok = unsafe {
@@ -384,12 +385,28 @@ pub fn current_token_account() -> String {
         )
     };
     if ok == 0 {
-        return "<unknown>".to_string();
+        return None;
     }
     // TOKEN_USER layout: first member is the SID pointer into the buffer.
     // The buffer is a raw byte allocation, so read the pointer unaligned.
     let sid: PSID = unsafe { std::ptr::read_unaligned(buf.as_ptr() as *const PSID) };
+    Some(f(sid))
+}
 
+/// True when the process token user is LocalSystem (S-1-5-18). SID-based, so
+/// localized account names ("NT-AUTORITÄT\SYSTEM") cannot defeat the check.
+pub fn current_token_is_local_system() -> bool {
+    // SAFETY: `sid` is valid for the callback's duration.
+    with_token_user_sid(|sid| unsafe { IsWellKnownSid(sid, WinLocalSystemSid) } != 0)
+        .unwrap_or(false)
+}
+
+/// Port of `currentTokenAccount`: "DOMAIN\name" or SID string fallback.
+pub fn current_token_account() -> String {
+    with_token_user_sid(account_name_for_sid).unwrap_or_else(|| "<unknown>".to_string())
+}
+
+fn account_name_for_sid(sid: PSID) -> String {
     let mut name = [0u16; 256];
     let mut domain = [0u16; 256];
     let mut name_len = name.len() as u32;
@@ -619,3 +636,7 @@ pub use crate::ffi_services::{
 // COM Task Scheduler bindings live in the sibling module (same unsafe
 // boundary policy). Re-exported here for ergonomic  paths.
 pub use crate::ffi_tasksched::{HrError, TiSession, TiState};
+
+// Read-only lock diagnostics (Restart Manager, pending-rename registry
+// value) live in the sibling module (same unsafe boundary policy).
+pub use crate::ffi_filelocks::{query_file_lock_holders, read_hklm_multi_sz};

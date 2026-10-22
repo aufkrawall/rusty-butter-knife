@@ -1,19 +1,26 @@
 # Current State
 
-Last cross-checked: 2026-09-11 (v2.2.0 release prep; AnselCamera made opt-in — see log/recent.md)
+Last cross-checked: 2026-10-22 (log-driven deletion/reporting fixes — see log/recent.md)
 
 ## Summary
 
 - Native Windows NVIDIA driver post-install debloater. Pure Rust crate at
-  repo root (`src/`, 64 unit/integration tests, unsafe confined to the
+  repo root (`src/`, 80 unit/integration tests, unsafe confined to the
   `ffi*` module family). C++ legacy version is gone.
   `python build.py` or `cargo build --release` builds `RustyButterKnife.exe`
   with explicit target triples, PE-machine verification and compiler path
   remapping (`--remap-path-prefix`).
 - Destructive system tool: dry-run by default; destructive execution needs
-  TrustedInstaller relaunch (scheduled-task COM) or explicit fallback flags,
-  interactive EXECUTE confirmation, a single-instance mutex, and a writable
-  audit log (probed before any destructive stage).
+  the scheduled-task worker (COM; requests TrustedInstaller, Windows runs it
+  as SYSTEM — logged as INFO, any other identity as WARN) or explicit fallback
+  flags, interactive EXECUTE confirmation, a single-instance mutex, and a
+  writable audit log (probed before any destructive stage).
+- Deletion is best-effort per entry (`deletion.rs`): locked entries no longer
+  block their siblings; only leftovers go to the reboot queue. `lockinfo.rs`
+  explains leftovers read-only (Restart Manager holders, container-loaded
+  modules, pending `PendingFileRenameOperations`) and only shapes log
+  severity/wording: a failure is INFO only when reboot scheduling is on and
+  every leftover is held solely by an NVIDIA container.
 - Safety model:
   - EVERY mutation (file/process/service/task) routes through component
     classification; deselected components block their actions and unknown

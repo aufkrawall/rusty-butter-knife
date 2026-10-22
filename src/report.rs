@@ -273,32 +273,13 @@ pub fn verify_candidate_removal() {
         s.paths_pending_reboot = pending_reboot as i64;
     });
 
-    if candidates.is_empty() {
-        ss.push_str("No NVIDIA bloat candidates were discovered in this run.\n");
-    } else if remaining == 0 {
-        ss.push_str(&format!(
-            "Result: all {} discovered paths are gone (0 remaining).\n",
-            candidates.len()
-        ));
-    } else {
-        let mut summary = format!(
-            "Summary: {remaining} of {} discovered paths still exist",
-            candidates.len()
-        );
-        if pending_reboot > 0 {
-            summary.push_str(&format!(" ({pending_reboot} pending reboot deletion)"));
-        }
-        if errors > 0 {
-            summary.push_str(&format!(
-                " ({errors} existence checks failed with I/O errors)"
-            ));
-        }
-        if dry_run > 0 {
-            summary.push_str(&format!(" ({dry_run} not attempted in dry-run)"));
-        }
-        summary.push('.');
-        ss.push_str(&summary);
-    }
+    ss.push_str(&post_run_summary_line(
+        candidates.len(),
+        remaining,
+        pending_reboot,
+        errors,
+        dry_run,
+    ));
     let log_path = app::run(|s| s.log_path.clone());
     append_block_serialized(&log_path, &ss);
 
@@ -322,6 +303,37 @@ pub fn verify_candidate_removal() {
             ),
         );
     }
+}
+
+/// Closing line of the post-run existence check. Always newline-terminated:
+/// the next timestamped log line used to be glued onto it.
+pub fn post_run_summary_line(
+    total: usize,
+    remaining: usize,
+    pending_reboot: usize,
+    errors: usize,
+    dry_run: usize,
+) -> String {
+    if total == 0 {
+        return "No NVIDIA bloat candidates were discovered in this run.\n".to_string();
+    }
+    if remaining == 0 {
+        return format!("Result: all {total} discovered paths are gone (0 remaining).\n");
+    }
+    let mut summary = format!("Summary: {remaining} of {total} discovered paths still exist");
+    if pending_reboot > 0 {
+        summary.push_str(&format!(" ({pending_reboot} pending reboot deletion)"));
+    }
+    if errors > 0 {
+        summary.push_str(&format!(
+            " ({errors} existence checks failed with I/O errors)"
+        ));
+    }
+    if dry_run > 0 {
+        summary.push_str(&format!(" ({dry_run} not attempted in dry-run)"));
+    }
+    summary.push_str(".\n");
+    summary
 }
 
 /// Port of `runCleanup`. Returns Err(message) where the C++ threw — the caller
@@ -404,13 +416,11 @@ pub fn run_cleanup() -> Result<(), String> {
         );
     }
     if opts.ti_child && !is_trusted_installer() {
-        log_line(
-            "WARN",
-            &format!(
-                "TI child running as {} instead of TrustedInstaller. SYSTEM-level privileges should suffice for file operations.",
-                current_token_account()
-            ),
+        let (level, msg) = worker_identity_message(
+            crate::sysinfo::is_local_system(),
+            &current_token_account(),
         );
+        log_line(level, &msg);
     }
 
     let enabled_snapshot = app::enabled_snapshot();
@@ -419,9 +429,11 @@ pub fn run_cleanup() -> Result<(), String> {
     kill_locker_processes(&enabled_snapshot);
     handle_scheduled_tasks(&enabled_snapshot);
     tally_previous_logs();
-    inspect_nv_container_modules(false);
+    crate::lockinfo::note_pending_reboot_deletions();
+    inspect_nv_container_modules(false, &enabled_snapshot);
     discover_candidates(&enabled_snapshot);
     write_candidates_to_log();
+    crate::lockinfo::note_candidates_already_pending();
 
     let candidate_count = app::run(|s| s.candidates.len());
     for index in 0..candidate_count {
@@ -432,7 +444,7 @@ pub fn run_cleanup() -> Result<(), String> {
         crate::deletion::delete_candidate(index);
     }
 
-    inspect_nv_container_modules(true);
+    inspect_nv_container_modules(true, &enabled_snapshot);
     verify_candidate_removal();
     if app::run(|s| s.aborted) {
         log_line(
@@ -448,13 +460,47 @@ pub fn run_cleanup() -> Result<(), String> {
             "Dry run only. Re-run with --execute to make changes.",
         );
     }
-    if opts.schedule_locked_for_reboot {
-        log_line(
-            "WARN",
-            "Some locked-file deletions may require reboot. Review report/log.",
-        );
+    let (scheduled_entries, pending_candidates) =
+        app::run(|s| (s.reboot_scheduled_paths.len(), s.paths_pending_reboot));
+    if let Some(msg) = reboot_notice(scheduled_entries, pending_candidates) {
+        log_line("WARN", &msg);
     }
     Ok(())
+}
+
+/// Closing reboot notice, only when this run verifiably queued reboot-time
+/// deletions (MoveFileExW succeeded). Nothing queued => no notice.
+pub fn reboot_notice(scheduled_entries: usize, pending_candidates: i64) -> Option<String> {
+    if scheduled_entries == 0 {
+        return None;
+    }
+    Some(format!(
+        "Reboot required to finish this run: {pending_candidates} candidate path(s) \
+         ({scheduled_entries} file-system entr{}) are queued for deletion at the next reboot.",
+        if scheduled_entries == 1 { "y" } else { "ies" }
+    ))
+}
+
+/// Identity line of the scheduled-task worker. Task Scheduler does not grant
+/// the requested TrustedInstaller principal and runs the task as SYSTEM;
+/// that is the normal, sufficient case (INFO). Any other identity is
+/// unexpected and stays a warning.
+pub fn worker_identity_message(is_local_system: bool, account: &str) -> (&'static str, String) {
+    if is_local_system {
+        (
+            "INFO",
+            format!(
+                "Worker identity: {account} (LocalSystem). Task Scheduler runs the requested TrustedInstaller task as SYSTEM; SYSTEM privileges cover the targeted file operations."
+            ),
+        )
+    } else {
+        (
+            "WARN",
+            format!(
+                "Worker running as {account}, neither TrustedInstaller nor LocalSystem; protected NVIDIA files may be denied."
+            ),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -482,6 +528,41 @@ mod tests {
             verify_outcome_for(true, "WARN", "MoveFileExW failed", true),
             VerifyOutcome::Failed("MoveFileExW failed".to_string())
         );
+    }
+
+    #[test]
+    fn post_run_summary_always_ends_its_line() {
+        // Regression: "...pending reboot deletion).[ts] [WARN] Post-run check".
+        for line in [
+            post_run_summary_line(0, 0, 0, 0, 0),
+            post_run_summary_line(8, 0, 0, 0, 0),
+            post_run_summary_line(8, 6, 6, 0, 0),
+            post_run_summary_line(8, 6, 0, 1, 2),
+        ] {
+            assert!(line.ends_with(".\n"), "{line:?}");
+        }
+        assert_eq!(
+            post_run_summary_line(8, 6, 6, 0, 0),
+            "Summary: 6 of 8 discovered paths still exist (6 pending reboot deletion).\n"
+        );
+    }
+
+    #[test]
+    fn reboot_notice_only_when_something_was_queued() {
+        // Regression: the notice fired on a 0-candidate run.
+        assert_eq!(reboot_notice(0, 0), None);
+        let msg = reboot_notice(7, 6).unwrap();
+        assert!(msg.contains("6 candidate path(s)") && msg.contains("7 file-system entries"));
+        assert!(reboot_notice(1, 1).unwrap().contains("1 file-system entry)"));
+    }
+
+    #[test]
+    fn worker_identity_is_info_only_for_local_system() {
+        assert_eq!(
+            worker_identity_message(true, "NT-AUTORITÄT\\SYSTEM").0,
+            "INFO"
+        );
+        assert_eq!(worker_identity_message(false, "PC\\admin").0, "WARN");
     }
 
     #[test]

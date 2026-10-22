@@ -7,6 +7,7 @@ use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use crate::app;
+use crate::lockinfo::FailedEntry;
 use crate::logging::{log_action, log_line};
 use crate::winfmt::format_win_error;
 
@@ -190,44 +191,108 @@ fn schedule_delete_tree(p: &Path) -> bool {
     })
 }
 
-/// Counted recursive removal (std's remove_dir_all does not return a count;
-/// the legacy build logs `Removed entries=N`). Reparse entries are removed
-/// AS ENTRIES (the link itself), their targets untouched (FS-01).
-fn remove_tree_counted(root: &Path) -> Result<u64, std::io::Error> {
-    let meta = std::fs::symlink_metadata(root)?;
+/// Result of one best-effort recursive removal pass.
+#[derive(Default)]
+struct TreeRemoval {
+    /// Entries removed, the directories themselves included (the legacy
+    /// build logs `Removed entries=N`).
+    removed: u64,
+    /// Entries that could not be removed. A directory that only stayed
+    /// because one of its children failed is NOT listed again: that is a
+    /// consequence, not a separate failure.
+    failures: Vec<FailedEntry>,
+}
+
+impl TreeRemoval {
+    fn fail(&mut self, path: &Path, e: &std::io::Error) {
+        self.failures.push(FailedEntry {
+            path: path.to_path_buf(),
+            code: e.raw_os_error().map(|c| c as u32),
+            message: e.to_string(),
+        });
+    }
+}
+
+/// Best-effort recursive removal: one locked entry no longer stops the
+/// whole tree (a single in-use file in Installer2 used to leave every
+/// sibling in place and push 165 entries into the reboot queue). Reparse
+/// entries are removed AS ENTRIES (the link itself), their targets untouched
+/// (FS-01); vanished entries count as neither removal nor failure.
+fn remove_tree_best_effort(root: &Path, out: &mut TreeRemoval) {
+    let meta = match std::fs::symlink_metadata(root) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+        Err(e) => return out.fail(root, &e),
+    };
     if meta.file_attributes() & crate::fsutil::FILE_ATTRIBUTE_REPARSE_POINT != 0 || !meta.is_dir() {
         // A junction/dir-symlink needs remove_dir semantics; file symlinks
         // need remove_file.
         const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x0000_0010;
         let is_dir_entry =
             (meta.file_attributes() & FILE_ATTRIBUTE_DIRECTORY != 0) || meta.is_dir();
-        if is_dir_entry {
-            std::fs::remove_dir(root)?;
+        let res = if is_dir_entry {
+            std::fs::remove_dir(root)
         } else {
-            std::fs::remove_file(root)?;
+            std::fs::remove_file(root)
+        };
+        match res {
+            Ok(()) => out.removed += 1,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => out.fail(root, &e),
         }
-        return Ok(1);
+        return;
     }
-    let mut count: u64 = 0;
-    for entry in std::fs::read_dir(root)? {
-        let entry = entry?;
-        let child = entry.path();
-        let attrs = entry.metadata().map(|m| m.file_attributes()).unwrap_or(0);
-        let is_reparse = crate::fsutil::attrs_are_reparse(attrs);
-        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
-        if is_reparse {
-            // Remove the reparse ENTRY itself; never its target.
-            count += remove_tree_counted(&child)?;
-        } else if is_dir {
-            count += remove_tree_counted(&child)?;
-        } else {
-            std::fs::remove_file(&child)?;
-            count += 1;
+    let failures_before = out.failures.len();
+    match std::fs::read_dir(root) {
+        Ok(entries) => {
+            for entry in entries {
+                let entry = match entry {
+                    Ok(entry) => entry,
+                    Err(e) => {
+                        out.fail(root, &e);
+                        continue;
+                    }
+                };
+                let child = entry.path();
+                let attrs = entry.metadata().map(|m| m.file_attributes()).unwrap_or(0);
+                let is_reparse = crate::fsutil::attrs_are_reparse(attrs);
+                let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+                if is_reparse || is_dir {
+                    // Reparse: removes the ENTRY itself, never its target.
+                    remove_tree_best_effort(&child, out);
+                } else {
+                    match std::fs::remove_file(&child) {
+                        Ok(()) => out.removed += 1,
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(e) => out.fail(&child, &e),
+                    }
+                }
+            }
         }
+        Err(e) => return out.fail(root, &e),
     }
-    std::fs::remove_dir(root)?;
-    count += 1; // the directory itself, matching fs::remove_all semantics
-    Ok(count)
+    match std::fs::remove_dir(root) {
+        Ok(()) => out.removed += 1, // the directory itself, matching fs::remove_all semantics
+        Err(_) if out.failures.len() > failures_before => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => out.fail(root, &e),
+    }
+}
+
+/// Two passes: the second clears read-only attributes and uses the
+/// extended-length form, so only genuinely undeletable entries remain.
+fn remove_tree_with_retry(path: &Path) -> TreeRemoval {
+    let mut first = TreeRemoval::default();
+    remove_tree_best_effort(path, &mut first);
+    if first.failures.is_empty() {
+        return first;
+    }
+    let ext = extended_length_path(path);
+    clear_blocking_attributes(&ext);
+    let mut retry = TreeRemoval::default();
+    remove_tree_best_effort(&ext, &mut retry);
+    retry.removed += first.removed;
+    retry
 }
 
 /// Pure decision core of `unsafe_recursive_directory_target` (unit-testable):
@@ -367,78 +432,78 @@ pub fn delete_candidate(index: usize) {
         _ => c.is_directory, // Unverifiable stat: legacy hint as fallback
     };
 
-    let result: Result<(), String> = if treat_as_directory {
-        let first = remove_tree_counted(&c.path);
-        let final_res = match first {
-            Ok(removed) => Ok(removed),
-            Err(_) => {
-                // Retry once: clear read-only attributes and try the extended-length form.
-                let ext = extended_length_path(&c.path);
-                clear_blocking_attributes(&ext);
-                remove_tree_counted(&ext)
-            }
-        };
-        match final_res {
-            Ok(removed) => {
-                log_action(
-                    "DeletePath",
-                    "INFO",
-                    &c.component_key,
-                    &path_str,
-                    &format!("Removed entries={removed}"),
-                );
-                Ok(())
-            }
-            Err(e) => Err(format!("Delete failed: {e}")),
+    // Ok(detail) = gone; Err((entries removed so far, undeletable entries)).
+    let result: Result<String, (u64, Vec<FailedEntry>)> = if treat_as_directory {
+        let removal = remove_tree_with_retry(&c.path);
+        if removal.failures.is_empty() {
+            Ok(format!("Removed entries={}", removal.removed))
+        } else {
+            Err((removal.removed, removal.failures))
         }
     } else {
-        match crate::ffi::delete_file_raw(&path_str) {
-            Ok(()) => {
-                log_action(
-                    "DeletePath",
-                    "INFO",
-                    &c.component_key,
-                    &path_str,
-                    "Deleted file",
-                );
-                Ok(())
-            }
-            Err(del_err) => {
-                const ERROR_ACCESS_DENIED: u32 = 5;
-                const ERROR_FILE_READ_ONLY: u32 = 6009;
-                if del_err == ERROR_ACCESS_DENIED || del_err == ERROR_FILE_READ_ONLY {
-                    // Likely read-only attribute or a >MAX_PATH path; clear + retry.
-                    set_attrs_normal(&c.path);
-                    let ext = extended_length_path(&c.path);
-                    match crate::ffi::delete_file_raw(&ext.to_string_lossy()) {
-                        Ok(()) => {
-                            log_action(
-                                "DeletePath",
-                                "INFO",
-                                &c.component_key,
-                                &path_str,
-                                "Deleted file",
-                            );
-                            Ok(())
-                        }
-                        Err(e2) => Err(format!("Delete failed: {}", format_win_error(e2))),
-                    }
-                } else {
-                    Err(format!("Delete failed: {}", format_win_error(del_err)))
-                }
-            }
-        }
+        delete_single_file(&c.path)
+            .map(|()| "Deleted file".to_string())
+            .map_err(|code| {
+                let failed = FailedEntry {
+                    path: c.path.clone(),
+                    code: Some(code),
+                    message: format_win_error(code),
+                };
+                (0, vec![failed])
+            })
     };
 
-    if result.is_ok() {
-        return;
+    let (removed, failures) = match result {
+        Ok(detail) => {
+            log_action("DeletePath", "INFO", &c.component_key, &path_str, &detail);
+            return;
+        }
+        Err(e) => e,
+    };
+
+    let schedule = app::opts(|o| o.schedule_locked_for_reboot);
+    let report = crate::lockinfo::describe_delete_failure(
+        treat_as_directory,
+        removed,
+        &failures,
+        schedule,
+    );
+    log_action(
+        "DeletePath",
+        report.level,
+        &c.component_key,
+        &path_str,
+        &report.detail,
+    );
+    for line in &report.entry_lines {
+        log_line(report.level, line);
     }
 
-    let detail = result.err().unwrap_or_else(|| "Delete failed".to_string());
-    log_action("DeletePath", "WARN", &c.component_key, &path_str, &detail);
-
-    if app::opts(|o| o.schedule_locked_for_reboot) {
+    if schedule {
+        // Only what the best-effort pass left behind is still on disk, so
+        // only that is queued for deletion at reboot.
         schedule_delete_tree(&c.path);
+    }
+}
+
+/// DeleteFileW with the read-only / >MAX_PATH retry. Err carries the final
+/// Win32 error code.
+fn delete_single_file(path: &Path) -> Result<(), u32> {
+    let path_str = path.to_string_lossy();
+    match crate::ffi::delete_file_raw(&path_str) {
+        Ok(()) => Ok(()),
+        Err(del_err) => {
+            const ERROR_ACCESS_DENIED: u32 = 5;
+            const ERROR_FILE_READ_ONLY: u32 = 6009;
+            if del_err == ERROR_ACCESS_DENIED || del_err == ERROR_FILE_READ_ONLY {
+                // Likely read-only attribute or a >MAX_PATH path; clear + retry.
+                set_attrs_normal(path);
+                let ext = extended_length_path(path);
+                crate::ffi::delete_file_raw(&ext.to_string_lossy())
+            } else {
+                Err(del_err)
+            }
+        }
     }
 }
 
@@ -501,6 +566,95 @@ mod tests {
         assert!(!decision(true, "c:\\windows\\system32\\driverstore\\filerepository\\nv_dispi.inf_amd64_0373\\nvcamera", "c:\\windows\\system32\\driverstore\\filerepository\\nv_dispi.inf_amd64_0373", "nvcamera"), "nvcamera");
         // Verify case-insensitivity on allowlisted directories
         assert!(!decision(true, "c:\\windows\\system32\\driverstore\\filerepository\\nv_dispi.inf_amd64_0373\\NvCamera", "c:\\windows\\system32\\driverstore\\filerepository\\nv_dispi.inf_amd64_0373", "NvCamera"), "NvCamera mixed case");
+    }
+
+    struct TempDir(PathBuf);
+    impl TempDir {
+        fn new(tag: &str) -> TempDir {
+            let p = std::env::temp_dir().join(format!(
+                "gpd-deletion-{tag}-{}-{}",
+                std::process::id(),
+                crate::util::now_unique_suffix()
+            ));
+            std::fs::create_dir_all(&p).expect("create temp dir");
+            TempDir(p)
+        }
+    }
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn best_effort_removal_continues_past_locked_entry() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let t = TempDir::new("best-effort");
+        let root = t.0.join("tree");
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("a.txt"), b"a").unwrap();
+        std::fs::write(root.join("sub").join("b.txt"), b"b").unwrap();
+        let locked = root.join("sub").join("locked.txt");
+        std::fs::write(&locked, b"x").unwrap();
+        // No FILE_SHARE_DELETE: DeleteFileW fails with a sharing violation.
+        let handle = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&locked)
+            .unwrap();
+
+        let mut pass = TreeRemoval::default();
+        remove_tree_best_effort(&root, &mut pass);
+        // Only the locked file is a failure; its parents staying behind are
+        // consequences, and every unlocked sibling is gone.
+        assert_eq!(pass.failures.len(), 1, "one failure expected");
+        assert_eq!(pass.failures[0].path, locked);
+        assert_eq!(pass.failures[0].code, Some(32));
+        assert_eq!(pass.removed, 2);
+        assert!(!root.join("a.txt").exists());
+        assert!(!root.join("sub").join("b.txt").exists());
+        assert!(locked.exists());
+
+        drop(handle);
+        let mut again = TreeRemoval::default();
+        remove_tree_best_effort(&root, &mut again);
+        assert!(again.failures.is_empty());
+        assert_eq!(again.removed, 3, "locked.txt, sub, tree");
+        assert!(!root.exists());
+
+        // A vanished root is neither a removal nor a failure.
+        let mut gone = TreeRemoval::default();
+        remove_tree_best_effort(&root, &mut gone);
+        assert_eq!((gone.removed, gone.failures.len()), (0, 0));
+    }
+
+    #[test]
+    fn best_effort_removal_never_enters_junction_targets() {
+        let t = TempDir::new("junction");
+        let outside = t.0.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("payload.txt"), b"x").unwrap();
+        let root = t.0.join("tree");
+        std::fs::create_dir_all(&root).unwrap();
+        let link = root.join("link");
+        let made = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(&outside)
+            .status()
+            .map(|st| st.success())
+            .unwrap_or(false);
+        if !made {
+            return;
+        }
+        let mut pass = TreeRemoval::default();
+        remove_tree_best_effort(&root, &mut pass);
+        assert!(pass.failures.is_empty());
+        assert!(!root.exists(), "tree and junction entry removed");
+        assert!(
+            outside.join("payload.txt").exists(),
+            "junction target must stay untouched (FS-01)"
+        );
     }
 
     #[test]

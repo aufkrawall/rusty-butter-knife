@@ -1,7 +1,7 @@
 //! Data types mirroring the C++ structs (`Options`, `Component`, `Candidate`,
 //! `ActionRecord`, `RunState`).
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 
 #[derive(Clone)]
@@ -140,4 +140,12 @@ pub struct RunState {
     // Dedup sets for the two-phase NVIDIA-container module inspection.
     pub reported_containers: HashSet<String>,
     pub reported_modules: HashSet<String>,
+    /// Lowercased telemetry/update module paths loaded by an NVIDIA container,
+    /// with the PIDs holding them. Explains expected delete failures.
+    pub container_loaded_modules: BTreeMap<String, Vec<u32>>,
+    /// Lowercased paths Windows already holds as reboot-pending deletions
+    /// (read-only snapshot taken at the start of cleanup).
+    pub pending_reboot_deletes: HashSet<String>,
+    /// Restart Manager lock lookups spent so far (bounded per run).
+    pub lock_queries: usize,
 }

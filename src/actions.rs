@@ -8,17 +8,47 @@ use crate::ffi;
 use crate::ffi_process;
 use crate::logging::{add_action, log_action, log_line};
 use crate::matching::{
-    is_preserved_container_name, module_is_telemetry_or_updater, process_action_decision,
-    service_action_decision, task_action_decision, ActionDecision,
+    is_preserved_container_name, match_component_for_path, module_is_telemetry_or_updater,
+    process_action_decision, service_action_decision, task_action_decision, ActionDecision,
 };
 use crate::procs::run_process_capture;
 use crate::sysinfo::system_dir_file;
-use crate::util::{join_command, parse_csv_line, trim};
+use crate::util::{join_command, parse_csv_line, to_lower, trim};
 use crate::winfmt::format_win_error;
+
+/// Pure wording core for one loaded telemetry/update module. `targeted`:
+/// the current component selection deletes this path; `scheduled`: its
+/// reboot-time deletion verifiably succeeded in this run. None = stay quiet
+/// (a kept module was already reported on first sighting).
+pub fn loaded_module_message(
+    post_delete_phase: bool,
+    first_sighting: bool,
+    targeted: bool,
+    scheduled: bool,
+) -> Option<&'static str> {
+    if post_delete_phase && scheduled {
+        return Some("Module still loaded; scheduled for deletion at the next reboot");
+    }
+    match (first_sighting, targeted) {
+        (true, true) => Some(
+            "Container has a module loaded that the selection removes; it cannot be deleted until the container restarts (reboot)",
+        ),
+        (true, false) => Some(
+            "Container has a telemetry/update module loaded that the current selection keeps (component off)",
+        ),
+        (false, true) if post_delete_phase => Some(
+            "Module still loaded and not scheduled for deletion in this run (see post-run check)",
+        ),
+        _ => None,
+    }
+}
 
 /// Port of `inspectNvContainerModules` (runs twice per cleanup; dedup sets
 /// live in RunState so sightings are not double-reported across phases).
-pub fn inspect_nv_container_modules(post_delete_phase: bool) {
+/// Every loaded telemetry/update module is classified against the component
+/// selection, so a module the user keeps is not announced as a pending
+/// reboot deletion.
+pub fn inspect_nv_container_modules(post_delete_phase: bool, enabled: &crate::app::EnabledMap) {
     if post_delete_phase {
         log_line(
             "INFO",
@@ -45,10 +75,12 @@ pub fn inspect_nv_container_modules(post_delete_phase: bool) {
         }
     };
 
+    let mut containers_seen = 0usize;
     for proc in processes {
         if !is_preserved_container_name(&proc.exe_name) {
             continue;
         }
+        containers_seen += 1;
         let pid_str = proc.pid.to_string();
         let container_key = format!("{}|{}", pid_str, proc.exe_name);
         let first_container_sighting =
@@ -85,16 +117,18 @@ pub fn inspect_nv_container_modules(post_delete_phase: bool) {
             if !module_is_telemetry_or_updater(&path) {
                 continue;
             }
+            let path_key = to_lower(&path);
             let module_key = format!("{}|{}", pid_str, path);
-            let already_reported = !app::run_mut(|s| s.reported_modules.insert(module_key));
-            if !already_reported {
-                log_line(
-                    "WARN",
-                    &format!(
-                        "Container has matching module loaded; deletion may require reboot: PID={} Module={path}",
-                        pid_str
-                    ),
-                );
+            let first_sighting = app::run_mut(|s| {
+                let pids = s.container_loaded_modules.entry(path_key.clone()).or_default();
+                if !pids.contains(&proc.pid) {
+                    pids.push(proc.pid);
+                }
+                s.reported_modules.insert(module_key)
+            });
+            let targeted = match_component_for_path(std::path::Path::new(&path), enabled).is_some();
+            let scheduled = app::run(|s| s.reboot_scheduled_paths.contains(&path_key));
+            if first_sighting {
                 add_action(
                     "LoadedTelemetryModule",
                     "Loaded",
@@ -102,16 +136,16 @@ pub fn inspect_nv_container_modules(post_delete_phase: bool) {
                     &path,
                     &format!("PID={pid_str}"),
                 );
-            } else if post_delete_phase {
-                log_line(
-                    "INFO",
-                    &format!(
-                        "Module still loaded after deletion (reboot will finalize): PID={} Module={path}",
-                        pid_str
-                    ),
-                );
+            }
+            if let Some(msg) =
+                loaded_module_message(post_delete_phase, first_sighting, targeted, scheduled)
+            {
+                log_line("INFO", &format!("{msg}: PID={pid_str} Module={path}"));
             }
         }
+    }
+    if containers_seen == 0 && !post_delete_phase {
+        log_line("INFO", "No NVIDIA Container processes running.");
     }
 }
 
@@ -145,15 +179,18 @@ pub fn kill_locker_processes(enabled: &crate::app::EnabledMap) {
         component_key: String,
     }
     let mut targets: Vec<Target> = Vec::new();
+    let (mut known_running, mut verified, mut deselected) = (0usize, 0usize, 0usize);
 
     for proc in processes {
         if !ffi_process::process_name_is_explicitly_killable(&proc.exe_name) {
             continue;
         }
+        known_running += 1;
         let component = match process_action_decision(&proc.exe_name, enabled, preserve_containers)
         {
             ActionDecision::Allowed(c) => c,
             ActionDecision::ComponentDisabled(c) => {
+                deselected += 1;
                 log_action(
                     "KillProcess",
                     "SKIP",
@@ -168,13 +205,16 @@ pub fn kill_locker_processes(enabled: &crate::app::EnabledMap) {
 
         if !execute {
             match ffi_process::verify_process_for_dry_run(proc.pid, &proc.exe_name) {
-                Ok(image) => log_action(
-                    "KillProcess",
-                    "DRYRUN",
-                    &component.key,
-                    &proc.exe_name,
-                    &format!("PID={} verified image={image}", proc.pid),
-                ),
+                Ok(image) => {
+                    verified += 1;
+                    log_action(
+                        "KillProcess",
+                        "DRYRUN",
+                        &component.key,
+                        &proc.exe_name,
+                        &format!("PID={} verified image={image}", proc.pid),
+                    );
+                }
                 Err(detail) => log_action(
                     "KillProcess",
                     "SKIP",
@@ -206,12 +246,25 @@ pub fn kill_locker_processes(enabled: &crate::app::EnabledMap) {
             "INFO",
             &format!("Verified process target: PID={} Image={image}", proc.pid),
         );
+        verified += 1;
         targets.push(Target {
             handle,
             exe_name: proc.exe_name.clone(),
             component_key: component.key.clone(),
         });
     }
+
+    log_line(
+        "INFO",
+        &if known_running == 0 {
+            "Locker processes: none of the known NVIDIA bloat processes is running.".to_string()
+        } else {
+            format!(
+                "Locker processes: {known_running} known NVIDIA bloat process(es) running; \
+                 {verified} verified for termination, {deselected} skipped (component deselected)."
+            )
+        },
+    );
 
     if !execute {
         return;
@@ -293,15 +346,22 @@ pub fn handle_services(enabled: &crate::app::EnabledMap) {
         }
     };
 
+    let scanned = services.len();
+    let (mut nvidia_context, mut targeted, mut deselected) = (0usize, 0usize, 0usize);
     for svc in services {
         let full = format!("{} ({})", svc.name, svc.display);
         if !ffi_process::has_strong_nvidia_named_target_context(&full) {
             continue;
         }
+        nvidia_context += 1;
         let preserve = app::opts(|o| o.preserve_nv_containers);
         let component = match service_action_decision(&svc.name, &svc.display, enabled, preserve) {
-            ActionDecision::Allowed(c) => c,
+            ActionDecision::Allowed(c) => {
+                targeted += 1;
+                c
+            }
             ActionDecision::ComponentDisabled(c) => {
+                deselected += 1;
                 log_action(
                     "Service",
                     "SKIP",
@@ -413,6 +473,25 @@ pub fn handle_services(enabled: &crate::app::EnabledMap) {
             );
         }
     }
+    log_line(
+        "INFO",
+        &stage_summary("Services", scanned, nvidia_context, targeted, deselected),
+    );
+}
+
+/// One summary line per service/task stage, so a log shows that the stage
+/// ran even when nothing matched.
+pub fn stage_summary(
+    stage: &str,
+    scanned: usize,
+    nvidia_context: usize,
+    targeted: usize,
+    deselected: usize,
+) -> String {
+    format!(
+        "{stage}: scanned {scanned}; {nvidia_context} with NVIDIA context; \
+         {targeted} targeted by the selection, {deselected} skipped (component deselected)."
+    )
 }
 
 const SERVICE_STOP_WAIT_MS: u32 = 10_000;
@@ -493,13 +572,20 @@ pub fn handle_scheduled_tasks(enabled: &crate::app::EnabledMap) {
 
     let schtasks = system_dir_file("schtasks.exe").ok();
 
+    let scanned = task_names.len();
+    let (mut nvidia_context, mut targeted, mut deselected) = (0usize, 0usize, 0usize);
     for task_name in task_names {
         if !ffi_process::has_strong_nvidia_named_target_context(&task_name) {
             continue;
         }
+        nvidia_context += 1;
         let component = match task_action_decision(&task_name, enabled) {
-            ActionDecision::Allowed(c) => c,
+            ActionDecision::Allowed(c) => {
+                targeted += 1;
+                c
+            }
             ActionDecision::ComponentDisabled(c) => {
+                deselected += 1;
                 log_action(
                     "ScheduledTask",
                     "SKIP",
@@ -557,5 +643,46 @@ pub fn handle_scheduled_tasks(enabled: &crate::app::EnabledMap) {
                 );
             }
         }
+    }
+    log_line(
+        "INFO",
+        &stage_summary("Scheduled tasks", scanned, nvidia_context, targeted, deselected),
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kept_module_is_never_announced_as_reboot_deletion() {
+        // Regression: nvprofileupdaterplugin.dll was reported as "deletion may
+        // require reboot" / "reboot will finalize" with its component off.
+        let first = loaded_module_message(false, true, false, false).unwrap();
+        assert!(first.contains("keeps"), "{first}");
+        assert_eq!(loaded_module_message(true, false, false, false), None);
+    }
+
+    #[test]
+    fn targeted_module_messages_follow_scheduling_outcome() {
+        assert!(loaded_module_message(false, true, true, false)
+            .unwrap()
+            .contains("removes"));
+        assert!(loaded_module_message(true, false, true, true)
+            .unwrap()
+            .contains("scheduled for deletion"));
+        assert!(loaded_module_message(true, false, true, false)
+            .unwrap()
+            .contains("not scheduled"));
+        // Pre-phase repeats stay quiet.
+        assert_eq!(loaded_module_message(false, false, true, false), None);
+    }
+
+    #[test]
+    fn stage_summary_reports_zero_matches_explicitly() {
+        assert_eq!(
+            stage_summary("Services", 312, 4, 0, 0),
+            "Services: scanned 312; 4 with NVIDIA context; 0 targeted by the selection, 0 skipped (component deselected)."
+        );
     }
 }

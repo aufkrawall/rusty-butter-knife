@@ -1,6 +1,6 @@
 # Known and Accepted Debt
 
-Last verified: 2026-09-06
+Last verified: 2026-10-22
 
 Primary sources:
 - `AGENTS.md`
@@ -17,7 +17,7 @@ becomes cheap or safe to fix should be fixed and removed from this page.
 
 ## No sanitizers/fuzzing; partial destructive-path coverage
 
-As of v2.0.1 the Rust crate has 62 tests (`cargo test --all-targets`) and a
+As of 2026-10-22 the Rust crate has 80 tests (`cargo test --all-targets`) and a
 Windows GitHub Actions gate that runs build, clippy `-D warnings`, all tests and
 safe CLI smokes on pushes/pull requests. Existing source is not guaranteed
 whole-tree rustfmt-clean; the project intentionally avoids unrelated formatter
@@ -78,7 +78,31 @@ remove the external-process timeout surface entirely. Deferred because adding
 AdjustTokenPrivileges/SeTakeOwnership code expands the unsafe boundary for
 marginal benefit under the normal SYSTEM/TI execution context.
 
+## Worker task still requests the TrustedInstaller principal
+
+`ffi_tasksched.rs` registers the worker task for `NT SERVICE\TrustedInstaller`
+(S4U); Task Scheduler does not grant that and runs it as SYSTEM, which every
+observed run log confirms and which suffices. Requesting SYSTEM explicitly
+(S-1-5-18, service-account logon) would replace reliance on that fallback with
+documented behavior, but it changes the privileged launch path and can only be
+verified in execute mode, i.e. on a sacrificial VM. Deferred until then; the
+log wording was made honest instead (SYSTEM = INFO, other identity = WARN).
+
+## No `rebootRequired` field in the status file
+
+The run report JSON already carries `candidatePathsPendingRebootDelete`. The
+`--status-file` JSON is written by the parent, which only sees the worker's
+exit code, so a reboot flag there would need a new child→parent channel or an
+exit-code contract change. Not worth it for now.
+
 ## Resolved findings — do not re-raise without new evidence
+
+- 2026-10-22: a single locked entry no longer aborts a directory delete (the
+  Installer2 case queued 165 entries for reboot); deletion is best-effort per
+  entry and only leftovers are queued.
+- 2026-10-22: the closing reboot warning fires only when this run queued
+  reboot deletions; loaded modules of deselected components are no longer
+  announced as pending reboot deletions.
 
 - v2.0.1: process termination no longer trusts generic basename substring
   matches. Only explicit known process names reach the mutation path, and the
